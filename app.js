@@ -54,6 +54,82 @@
   function $(sel, root) { return (root || document).querySelector(sel); }
   function val(id) { return document.getElementById(id).value; }
 
+
+  /* ---------- 地點搜尋(自動抓座標) ---------- */
+  async function geocode(query) {
+    var list = [];
+    try { list = await call('locations.geocode', { query: query }); }
+    catch (e) { if (e.code === 'AUTH') throw e; list = []; } // 後端查詢失敗就改用備援
+    if (list && list.length) return list;
+    var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=tw&accept-language=zh-TW&q=' + encodeURIComponent(query);
+    var res = await fetch(url);
+    if (!res.ok) throw new Error('地點搜尋服務暫時無法使用,請手動輸入座標');
+    var j = await res.json();
+    return j.map(function (x) { return { name: x.display_name, lat: Number(x.lat), lng: Number(x.lon), source: 'osm' }; });
+  }
+
+  /* ---------- Excel 工具 ---------- */
+  var xlsxPromise = null;
+  function loadXLSX() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (!xlsxPromise) xlsxPromise = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'vendor/xlsx.mini.min.js';
+      s.onload = function () { resolve(window.XLSX); };
+      s.onerror = function () { xlsxPromise = null; reject(new Error('無法載入 Excel 元件')); };
+      document.head.appendChild(s);
+    });
+    return xlsxPromise;
+  }
+  var EMP_COLS = [['員編', 'id'], ['姓名', 'name'], ['部門', 'dept'], ['職稱', 'title'], ['角色', 'role'], ['主管員編', 'manager'], ['到職日', 'hireDate'], ['狀態', 'status'], ['Email', 'email'], ['電話', 'phone'], ['初始密碼', 'password']];
+  function normDate(v) {
+    v = String(v == null ? '' : v).trim();
+    var m = v.match(/^(\d{4})[\/.\-年](\d{1,2})[\/.\-月](\d{1,2})日?$/);
+    return m ? m[1] + '-' + pad(+m[2]) + '-' + pad(+m[3]) : v;
+  }
+  async function downloadEmpTemplate() {
+    var X = await loadXLSX();
+    var wb = X.utils.book_new();
+    var rows = [EMP_COLS.map(function (c) { return c[0]; }),
+      ['E101', '王小明', '門市部', '門市人員', '員工', 'M001', '2025-03-01', '在職', 'ming@example.com', '0912345678', ''],
+      ['M101', '李主管', '門市部', '店長', '主管', '', '2024-01-15', '在職', '', '', '']];
+    var ws = X.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [10, 10, 12, 12, 8, 10, 12, 8, 24, 14, 12].map(function (w) { return { wch: w }; });
+    X.utils.book_append_sheet(wb, ws, '員工');
+    var help = X.utils.aoa_to_sheet([
+      ['欄位', '說明'], ['員編', '必填。英數字、底線、連字號,最多 20 碼。已存在的員編會更新資料'], ['姓名', '必填'],
+      ['角色', '員工 / 主管 / 管理員(留空視為員工)'], ['主管員編', '選填。必須是已存在或同檔案內、角色為主管/管理員的員編'],
+      ['到職日', '格式 YYYY-MM-DD(也接受 2025/3/1)'], ['狀態', '在職 / 離職(留空視為在職)'],
+      ['初始密碼', '選填,至少 8 碼。新員工留空會自動產生隨機密碼;既有員工留空則不改密碼']]);
+    help['!cols'] = [{ wch: 12 }, { wch: 70 }];
+    X.utils.book_append_sheet(wb, help, '填寫說明');
+    X.writeFile(wb, '員工匯入範本.xlsx');
+  }
+  async function readEmpFile(file) {
+    var X = await loadXLSX();
+    var wb = X.read(await file.arrayBuffer(), { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd' });
+    var ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) throw new Error('檔案中沒有工作表');
+    var aoa = X.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
+    if (!aoa.length) throw new Error('檔案是空的');
+    var head = aoa[0].map(function (h) { return String(h).trim(); });
+    var alias = { '主管': '主管員編', '密碼': '初始密碼', 'E-mail': 'Email', '信箱': 'Email', '手機': '電話' };
+    head = head.map(function (h) { return alias[h] || h; });
+    if (head.indexOf('員編') < 0 || head.indexOf('姓名') < 0) throw new Error('找不到「員編」「姓名」欄位,請使用範本格式');
+    var out = [];
+    for (var i = 1; i < aoa.length; i++) {
+      var row = aoa[i];
+      if (!row.some(function (c) { return String(c).trim() !== ''; })) continue;
+      var o = { line: i + 1 };
+      EMP_COLS.forEach(function (c) { var k = head.indexOf(c[0]); o[c[1]] = k >= 0 ? String(row[k] == null ? '' : row[k]).trim() : ''; });
+      o.hireDate = normDate(o.hireDate);
+      out.push(o);
+    }
+    if (!out.length) throw new Error('沒有找到資料列');
+    if (out.length > 500) throw new Error('單次最多匯入 500 筆,目前有 ' + out.length + ' 筆');
+    return out;
+  }
+
   /* ---------- 登入 ---------- */
   function renderLogin() {
     clearInterval(clockTimer);
@@ -340,7 +416,7 @@
   async function viewEmployees(main) {
     var list = await call('employees.list');
     var roleName = { admin: '管理員', manager: '主管', employee: '員工' };
-    main.innerHTML = '<div class="row"><h2 style="margin:0">員工資料</h2><div class="spacer"></div><button class="primary" id="add">新增員工</button></div><div class="card">' +
+    main.innerHTML = '<div class="row"><h2 style="margin:0">員工資料</h2><div class="spacer"></div><button id="tpl">下載 Excel 範本</button><button id="imp">Excel 批次匯入</button><button class="primary" id="add">新增員工</button></div><input type="file" id="impf" accept=".xlsx,.xls,.csv" class="hidden"><div class="card">' +
       table(['員編', '姓名', '部門', '職稱', '角色', '主管', '到職日', '狀態', ''], list.map(function (e) {
         return '<tr><td>' + esc(e.id) + '</td><td>' + esc(e.name) + '</td><td>' + esc(e.dept) + '</td><td>' + esc(e.title) + '</td><td>' + roleName[e.role] + '</td><td>' + esc(e.manager) + '</td><td>' + esc(e.hireDate) + '</td><td>' + badge(e.status) +
           '</td><td><button class="sm" data-edit="' + esc(e.id) + '">編輯</button> <button class="sm" data-pw="' + esc(e.id) + '">重設密碼</button></td></tr>';
@@ -366,6 +442,52 @@
         }, $('#ef button', d));
       };
     }
+
+    $('#tpl').onclick = function () { guard(downloadEmpTemplate, this); };
+    $('#imp').onclick = function () { $('#impf').value = ''; $('#impf').click(); };
+    $('#impf').onchange = function () {
+      var f = this.files[0];
+      if (!f) return;
+      guard(async function () {
+        var rows = await readEmpFile(f);
+        showImport(rows, f.name);
+      });
+    };
+    function showImport(rows, fname) {
+      var d = openDialog('<h3>批次匯入員工</h3><p>檔案:' + esc(fname) + ',共 <b>' + rows.length + '</b> 筆。員編已存在者會更新,其餘新增。</p>' +
+        '<div class="tablewrap" style="max-height:240px;overflow:auto">' + table(['列', '員編', '姓名', '部門', '角色', '主管', '到職日', '狀態'], rows.slice(0, 20).map(function (r) {
+          return '<tr><td>' + r.line + '</td><td>' + esc(r.id) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.dept) + '</td><td>' + esc(r.role) + '</td><td>' + esc(r.manager) + '</td><td>' + esc(r.hireDate) + '</td><td>' + esc(r.status) + '</td></tr>';
+        })) + '</div>' + (rows.length > 20 ? '<p class="hint">僅預覽前 20 筆</p>' : '') +
+        '<div id="impres"></div><div class="row" style="margin-top:12px"><button class="primary" id="impgo">開始匯入</button><button type="button" data-close>取消</button></div>');
+      $('#impgo', d).onclick = function () {
+        var btn = this;
+        guard(async function () {
+          var r = await call('employees.import', { rows: rows });
+          var box = $('#impres', d);
+          if (!r.applied) {
+            box.innerHTML = '<p><span class="badge bad">未匯入</span> 有 ' + r.errors.length + ' 個問題,請修正 Excel 後重新匯入(全部通過才會寫入):</p>' +
+              table(['列', '員編', '問題'], r.errors.map(function (e) { return '<tr><td>' + e.line + '</td><td>' + esc(e.id) + '</td><td class="wrap">' + esc(e.message) + '</td></tr>'; }));
+            return;
+          }
+          btn.classList.add('hidden');
+          box.innerHTML = '<p><span class="badge ok">匯入完成</span> 新增 ' + r.created.length + ' 位、更新 ' + r.updated + ' 位。</p>' +
+            (r.created.length ? '<p class="hint">以下是新員工的登入密碼,只會顯示這一次,請下載後妥善發放,並提醒員工登入後修改。</p>' +
+              table(['員編', '姓名', '初始密碼'], r.created.map(function (c) { return '<tr><td>' + esc(c.id) + '</td><td>' + esc(c.name) + '</td><td><code>' + esc(c.password) + '</code></td></tr>'; })) +
+              '<div class="row" style="margin-top:8px"><button id="pwdl">下載帳號密碼清單</button></div>' : '');
+          var dl = $('#pwdl', d);
+          if (dl) dl.onclick = function () {
+            guard(async function () {
+              var X = await loadXLSX();
+              var wb = X.utils.book_new();
+              X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['員編', '姓名', '初始密碼']].concat(r.created.map(function (c) { return [c.id, c.name, c.password]; }))), '帳號密碼');
+              X.writeFile(wb, '新進員工帳號密碼.xlsx');
+            });
+          };
+          viewEmployees(main);
+        }, btn);
+      };
+      d.addEventListener('close', function () { viewEmployees(main); }, { once: true });
+    }
     $('#add').onclick = function () { form(null); };
     document.querySelectorAll('[data-edit]').forEach(function (b) { b.onclick = function () { form(list.filter(function (x) { return x.id === b.dataset.edit; })[0]); }; });
     document.querySelectorAll('[data-pw]').forEach(function (b) {
@@ -385,23 +507,61 @@
         return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
           '</td><td><button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
       }), '尚未設定地點') + '</div>' +
-      '<p class="hint">提示:在 Google 地圖上對地點按右鍵,第一行數字即為「緯度, 經度」。也可在該地點用手機開啟本頁,按「使用目前位置」。</p>';
+      '<p class="hint">提示:新增地點時輸入名稱或地址再按「搜尋座標」即可自動取得座標;也可在現場按「使用目前位置」。儲存前請用地圖連結確認位置正確。</p>';
 
     function form(l) {
       var isNew = !l; l = l || { lat: '', lng: '', radius: 100, active: true };
       var d = openDialog('<h3>' + (isNew ? '新增地點' : '編輯地點') + '</h3><form id="lf" class="form">' +
-        '<div class="full">' + field('l_name', '名稱', l.name || '', 'text', 'required') + '</div>' +
-        field('l_lat', '緯度', l.lat, 'number', 'step="any" required') + field('l_lng', '經度', l.lng, 'number', 'step="any" required') +
+        '<div class="full">' + field('l_name', '地點名稱', l.name || '', 'text', 'required placeholder="例如:寶雅 高雄巨蛋店"') + '</div>' +
+        '<div class="full"><label for="l_q">地址 / 搜尋關鍵字(選填,留空則用名稱搜尋)</label><div class="row"><input id="l_q" style="flex:1" placeholder="例如:高雄市左營區博愛二路777號"><button type="button" id="l_find">搜尋座標</button></div></div>' +
+        '<div class="full hidden" id="l_res"></div>' +
+        field('l_lat', '緯度', l.lat, 'number', 'step="any"') + field('l_lng', '經度', l.lng, 'number', 'step="any"') +
+        '<div class="full muted" id="l_chk"></div>' +
         field('l_rad', '允許半徑(公尺)', l.radius, 'number', 'min="10" max="5000" required') +
         '<div><label for="l_act">狀態</label><select id="l_act"><option value="1"' + (l.active ? ' selected' : '') + '>啟用</option><option value="0"' + (!l.active ? ' selected' : '') + '>停用</option></select></div>' +
         '<div class="full"><button type="button" id="l_here">使用目前位置</button></div>' +
         '<div class="full row"><button class="primary" type="submit">儲存</button><button type="button" data-close>取消</button></div></form>');
+
+      function showCoord() {
+        var la = val('l_lat'), ln = val('l_lng');
+        $('#l_chk', d).innerHTML = la && ln ? '座標:' + esc(la) + ', ' + esc(ln) + ' — <a target="_blank" rel="noopener" href="https://www.google.com/maps?q=' + encodeURIComponent(la + ',' + ln) + '">在地圖上確認位置</a>' : '';
+      }
+      function pick(c) {
+        document.getElementById('l_lat').value = Number(c.lat).toFixed(6);
+        document.getElementById('l_lng').value = Number(c.lng).toFixed(6);
+        $('#l_res', d).classList.add('hidden');
+        showCoord();
+        toast('已帶入座標,請確認地圖位置後儲存');
+      }
+      async function search() {
+        var q = (val('l_q') || val('l_name')).trim();
+        if (!q) return toast('請先輸入地點名稱或地址', true);
+        var box = $('#l_res', d);
+        box.classList.remove('hidden'); box.innerHTML = '<span class="muted">搜尋中…</span>';
+        var list = [];
+        try { list = await geocode(q); } catch (e) { box.classList.add('hidden'); throw e; }
+        if (!list.length) { box.innerHTML = '<span class="badge bad">找不到</span> 請改用更完整的地址,或手動輸入座標'; return false; }
+        if (list.length === 1) { pick(list[0]); return true; }
+        box.innerHTML = '<div class="muted">找到多個結果,請選擇正確的位置:</div>' + list.map(function (c, i) {
+          return '<div style="margin-top:6px"><button type="button" class="sm" data-pick="' + i + '">選擇</button> ' + esc(c.name) + '</div>';
+        }).join('');
+        box.querySelectorAll('[data-pick]').forEach(function (b) { b.onclick = function () { pick(list[+b.dataset.pick]); }; });
+        return false;
+      }
+      showCoord();
+      $('#l_lat', d).oninput = $('#l_lng', d).oninput = showCoord;
+      $('#l_find', d).onclick = function () { guard(search, this); };
       $('#l_here', d).onclick = function () {
-        guard(async function () { var p = await getPosition(); document.getElementById('l_lat').value = p.coords.latitude.toFixed(6); document.getElementById('l_lng').value = p.coords.longitude.toFixed(6); toast('已帶入目前位置(精準度約 ' + Math.round(p.coords.accuracy) + ' 公尺)'); }, this);
+        guard(async function () { var p = await getPosition(); pick({ lat: p.coords.latitude, lng: p.coords.longitude }); toast('已帶入目前位置(精準度約 ' + Math.round(p.coords.accuracy) + ' 公尺)'); }, this);
       };
       $('#lf', d).onsubmit = function (ev) {
         ev.preventDefault();
         guard(async function () {
+          if (!val('l_lat') || !val('l_lng')) { // 沒填座標:先自動搜尋,讓使用者確認後再儲存
+            var ok = await search();
+            if (!ok) toast('請確認座標後再按儲存', true);
+            return;
+          }
           await call('locations.save', { id: l.id, name: val('l_name').trim(), lat: Number(val('l_lat')), lng: Number(val('l_lng')), radius: Number(val('l_rad')), active: val('l_act') === '1' });
           d.close(); toast('已儲存'); viewLocations(main);
         }, $('#lf button[type=submit]', d));

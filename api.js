@@ -88,6 +88,43 @@
       return true;
     },
     'employees.resetPassword': function (db, u, p) { needAdmin(u); if (String(p.password || '').length < 8) throw new Error('密碼至少 8 碼'); var e = db.emps.filter(function (x) { return x.id === p.id; })[0]; if (!e) throw new Error('找不到員工'); e.password = p.password; return true; },
+    'employees.import': function (db, u, p) {
+      needAdmin(u);
+      var rows = p.rows || [];
+      if (!rows.length) throw new Error('沒有可匯入的資料');
+      var RM = { admin: 'admin', '管理員': 'admin', '人資': 'admin', manager: 'manager', '主管': 'manager', employee: 'employee', '員工': 'employee', '': 'employee' };
+      var errors = [], seen = {}, clean = [];
+      rows.forEach(function (r, i) {
+        var line = r.line || i + 2, id = String(r.id == null ? '' : r.id).trim(), name = String(r.name == null ? '' : r.name).trim();
+        var role = RM[String(r.role == null ? '' : r.role).trim().toLowerCase()], status = String(r.status || '在職').trim(), hire = String(r.hireDate || '').trim(), pwd = String(r.password == null ? '' : r.password), err = [];
+        if (!id) err.push('員編必填'); else if (!/^[A-Za-z0-9_-]{1,20}$/.test(id)) err.push('員編只能是英數字、底線、連字號(最多 20 碼)'); else if (seen[id]) err.push('員編與第 ' + seen[id] + ' 列重複');
+        if (!name) err.push('姓名必填');
+        if (!role) err.push('角色必須是 員工/主管/管理員');
+        if (status !== '在職' && status !== '離職') err.push('狀態必須是 在職 或 離職');
+        if (hire && !(/^\d{4}-\d{2}-\d{2}$/.test(hire) && new Date(hire + 'T00:00:00Z').toISOString().slice(0, 10) === hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
+        if (pwd && pwd.length < 8) err.push('初始密碼至少 8 碼');
+        if (id && id === u.id && (role !== 'admin' || status !== '在職')) err.push('不能降級或停用自己');
+        if (id) seen[id] = line;
+        if (err.length) errors.push({ line: line, id: id, message: err.join(';') });
+        clean.push({ line: line, id: id, name: name, dept: String(r.dept || '').trim(), title: String(r.title || '').trim(), role: role, manager: String(r.manager || '').trim(), hireDate: hire, status: status, email: String(r.email || '').trim(), phone: String(r.phone || '').trim(), password: pwd });
+      });
+      var roleOf = {}; db.emps.forEach(function (e) { roleOf[e.id] = e.role; }); clean.forEach(function (c) { if (c.id) roleOf[c.id] = c.role || roleOf[c.id]; });
+      clean.forEach(function (c) {
+        if (!c.manager) return;
+        if (c.manager === c.id) errors.push({ line: c.line, id: c.id, message: '主管不能是自己' });
+        else if (!(c.manager in roleOf)) errors.push({ line: c.line, id: c.id, message: '找不到主管員編 ' + c.manager });
+        else if (roleOf[c.manager] === 'employee') errors.push({ line: c.line, id: c.id, message: '主管員編 ' + c.manager + ' 的角色不是主管/管理員' });
+      });
+      if (errors.length) return { applied: false, errors: errors, created: [], updated: 0 };
+      var created = [], updated = 0;
+      clean.forEach(function (c) {
+        var e = db.emps.filter(function (x) { return x.id === c.id; })[0];
+        if (e) { ['name', 'dept', 'title', 'role', 'manager', 'hireDate', 'status', 'email', 'phone'].forEach(function (k) { e[k] = c[k]; }); if (c.password) e.password = c.password; updated++; }
+        else { var pw = c.password || Math.random().toString(36).slice(2, 12); db.emps.push({ id: c.id, name: c.name, dept: c.dept, title: c.title, role: c.role, manager: c.manager, hireDate: c.hireDate, status: c.status, email: c.email, phone: c.phone, password: pw }); created.push({ id: c.id, name: c.name, password: pw }); }
+      });
+      return { applied: true, errors: [], created: created, updated: updated };
+    },
+    'locations.geocode': function () { return []; }, // 示範模式沒有後端,前端會改用 OpenStreetMap 查詢
     'leave.types': function (db) { return db.leaveTypes; },
     'leave.balance': function (db, u) { return balance(db, u); },
     'leave.apply': function (db, u, p) {

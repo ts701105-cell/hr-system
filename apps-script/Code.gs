@@ -103,6 +103,7 @@ var ROUTES = {
   'employees.list': employeesList_,
   'employees.save': employeesSave_,
   'employees.resetPassword': employeesReset_,
+  'employees.import': employeesImport_,
   'leave.types': leaveTypes_,
   'leave.balance': leaveBalance_,
   'leave.apply': leaveApply_,
@@ -117,6 +118,7 @@ var ROUTES = {
   'locations.list': locationsList_,
   'locations.save': locationsSave_,
   'locations.delete': locationsDelete_,
+  'locations.geocode': locationsGeocode_,
   'shifts.types': shiftTypes_,
   'shifts.list': shiftsList_,
   'shifts.save': shiftsSave_
@@ -224,6 +226,99 @@ function employeesReset_(u, p) {
   if (!findEmp_(p.id)) throw new Error('找不到員工');
   setEmpField_(p.id, '密碼雜湊', hash_(np));
   return true;
+}
+
+var ROLE_MAP = { 'admin': 'admin', '管理員': 'admin', '人資': 'admin', 'manager': 'manager', '主管': 'manager', 'employee': 'employee', '員工': 'employee', '': 'employee' };
+
+/**
+ * 批次匯入員工。p.rows = [{id,name,dept,title,role,manager,hireDate,status,email,phone,password}]
+ * 先完整驗證,有任何錯誤就一筆都不寫入(回傳 errors)。
+ * 新員工沒填密碼時自動產生隨機密碼並回傳,供管理員發放。
+ */
+function employeesImport_(u, p) {
+  requireAdmin_(u);
+  var rows = p.rows || [];
+  if (!rows.length) throw new Error('沒有可匯入的資料');
+  if (rows.length > 500) throw new Error('單次最多匯入 500 筆');
+
+  var sh = sheet_(SHEETS.EMP);
+  var n = sh.getLastRow();
+  var width = HEADERS['員工'].length;
+  var values = n > 1 ? sh.getRange(2, 1, n - 1, width).getValues() : [];
+  var index = {};
+  values.forEach(function (r, i) {
+    index[String(r[0])] = i;
+    if (r[6] instanceof Date) r[6] = Utilities.formatDate(r[6], 'Asia/Taipei', 'yyyy-MM-dd');
+  });
+
+  var errors = [], seen = {}, clean = [];
+  rows.forEach(function (r, i) {
+    var line = r.line || (i + 2);
+    var id = String(r.id == null ? '' : r.id).trim();
+    var name = String(r.name == null ? '' : r.name).trim();
+    var role = ROLE_MAP[String(r.role == null ? '' : r.role).trim().toLowerCase()];
+    var status = String(r.status || '在職').trim();
+    var hire = String(r.hireDate || '').trim();
+    var pwd = String(r.password == null ? '' : r.password);
+    var err = [];
+    if (!id) err.push('員編必填');
+    else if (!/^[A-Za-z0-9_-]{1,20}$/.test(id)) err.push('員編只能是英數字、底線、連字號(最多 20 碼)');
+    else if (seen[id]) err.push('員編與第 ' + seen[id] + ' 列重複');
+    if (!name) err.push('姓名必填');
+    if (!role) err.push('角色必須是 員工/主管/管理員');
+    if (status !== '在職' && status !== '離職') err.push('狀態必須是 在職 或 離職');
+    if (hire && !validDate_(hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
+    if (pwd && pwd.length < 8) err.push('初始密碼至少 8 碼');
+    if (id && id === u['員編'] && (role !== 'admin' || status !== '在職')) err.push('不能降級或停用自己');
+    if (id) seen[id] = line;
+    if (err.length) errors.push({ line: line, id: id, message: err.join(';') });
+    clean.push({ line: line, id: id, name: name, dept: String(r.dept || '').trim(), title: String(r.title || '').trim(), role: role, manager: String(r.manager || '').trim(),
+      hireDate: hire, status: status, email: String(r.email || '').trim(), phone: String(r.phone || '').trim(), password: pwd });
+  });
+
+  // 主管員編必須存在(資料表或本批次內),且對象需為主管或管理員
+  var roleOf = {};
+  values.forEach(function (r) { roleOf[String(r[0])] = r[4]; });
+  clean.forEach(function (c) { if (c.id) roleOf[c.id] = c.role || roleOf[c.id]; });
+  clean.forEach(function (c) {
+    if (!c.manager) return;
+    if (c.manager === c.id) errors.push({ line: c.line, id: c.id, message: '主管不能是自己' });
+    else if (!(c.manager in roleOf)) errors.push({ line: c.line, id: c.id, message: '找不到主管員編 ' + c.manager });
+    else if (roleOf[c.manager] === 'employee') errors.push({ line: c.line, id: c.id, message: '主管員編 ' + c.manager + ' 的角色不是主管/管理員' });
+  });
+
+  if (errors.length) return { applied: false, errors: errors, created: [], updated: 0 };
+
+  var created = [], updated = 0, appendRows = [];
+  clean.forEach(function (c) {
+    var pos = index[c.id];
+    if (pos !== undefined) {
+      var old = values[pos];
+      var pw = c.password ? hash_(c.password) : old[7];
+      values[pos] = [c.id, c.name, c.dept, c.title, c.role, c.manager, c.hireDate, pw, c.status, c.email, c.phone];
+      updated++;
+    } else {
+      var plain = c.password || randomPassword_();
+      appendRows.push([c.id, c.name, c.dept, c.title, c.role, c.manager, c.hireDate, hash_(plain), c.status, c.email, c.phone]);
+      created.push({ id: c.id, name: c.name, password: plain });
+    }
+  });
+  if (values.length) sh.getRange(2, 1, values.length, width).setValues(values);
+  if (appendRows.length) sh.getRange(2 + values.length, 1, appendRows.length, width).setNumberFormat('@').setValues(appendRows);
+  return { applied: true, errors: [], created: created, updated: updated };
+}
+
+function validDate_(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  var d = new Date(s + 'T00:00:00Z');
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+function randomPassword_() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  var out = '';
+  for (var i = 0; i < 10; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+  return out;
 }
 
 /* ============ 請假 ============ */
@@ -386,6 +481,19 @@ function locationsDelete_(u, p) {
   if (!row) throw new Error('找不到地點');
   sh.deleteRow(row);
   return true;
+}
+
+/** 以名稱或地址查詢座標(使用 Google 地圖地理編碼),回傳最多 5 筆候選 */
+function locationsGeocode_(u, p) {
+  requireAdmin_(u);
+  var q = String(p.query || '').trim();
+  if (!q) throw new Error('請輸入要搜尋的地點名稱或地址');
+  if (q.length > 200) throw new Error('搜尋文字過長');
+  var res = Maps.newGeocoder().setLanguage('zh-TW').setRegion('tw').geocode(q);
+  if (res.status !== 'OK' || !res.results) return [];
+  return res.results.slice(0, 5).map(function (r) {
+    return { name: r.formatted_address, lat: r.geometry.location.lat, lng: r.geometry.location.lng, source: 'google' };
+  });
 }
 
 /* ============ 排班 ============ */
