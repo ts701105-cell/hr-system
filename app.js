@@ -61,6 +61,9 @@
     try { list = await call('locations.geocode', { query: query }); }
     catch (e) { if (e.code === 'AUTH') throw e; list = []; } // 後端查詢失敗就改用備援
     if (list && list.length) return list;
+    var wait = 1100 - (Date.now() - (geocode.last || 0)); // OSM 規定每秒最多 1 次
+    if (wait > 0) await new Promise(function (r) { setTimeout(r, wait); });
+    geocode.last = Date.now();
     var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=tw&accept-language=zh-TW&q=' + encodeURIComponent(query);
     var res = await fetch(url);
     if (!res.ok) throw new Error('地點搜尋服務暫時無法使用,請手動輸入座標');
@@ -127,6 +130,46 @@
     }
     if (!out.length) throw new Error('沒有找到資料列');
     if (out.length > 500) throw new Error('單次最多匯入 500 筆,目前有 ' + out.length + ' 筆');
+    return out;
+  }
+
+
+  async function downloadLocTemplate() {
+    var X = await loadXLSX();
+    var wb = X.utils.book_new();
+    var ws = X.utils.aoa_to_sheet([['名稱', '地址(選填,用來搜尋座標)', '緯度(選填)', '經度(選填)', '允許半徑(公尺)', '狀態'],
+      ['寶雅 高雄巨蛋店', '高雄市左營區博愛二路777號', '', '', 100, '啟用'],
+      ['總公司', '', 25.033964, 121.564468, 150, '啟用']]);
+    ws['!cols'] = [20, 34, 12, 12, 14, 8].map(function (w) { return { wch: w }; });
+    X.utils.book_append_sheet(wb, ws, '打卡地點');
+    var help = X.utils.aoa_to_sheet([['欄位', '說明'], ['名稱', '必填。名稱已存在的地點會被更新,不會重複新增'],
+      ['地址', '緯度、經度留空時,系統用「地址」搜尋座標;地址也留空就用「名稱」搜尋。建議填完整地址以提高準確度'],
+      ['緯度 / 經度', '選填。兩者都填就直接使用,不再搜尋'], ['允許半徑', '10~5000 公尺,留空視為 100'], ['狀態', '啟用 / 停用,留空視為啟用']]);
+    help['!cols'] = [{ wch: 14 }, { wch: 80 }];
+    X.utils.book_append_sheet(wb, help, '填寫說明');
+    X.writeFile(wb, '打卡地點匯入範本.xlsx');
+  }
+  async function readLocFile(file) {
+    var X = await loadXLSX();
+    var wb = X.read(await file.arrayBuffer(), { type: 'array' });
+    var ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) throw new Error('檔案中沒有工作表');
+    var aoa = X.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+    if (!aoa.length) throw new Error('檔案是空的');
+    var head = aoa[0].map(function (h) { return String(h).trim(); });
+    function col(prefix) { for (var i = 0; i < head.length; i++) if (head[i].indexOf(prefix) === 0) return i; return -1; }
+    var c = { name: col('名稱'), addr: col('地址'), lat: col('緯度'), lng: col('經度'), rad: col('允許半徑') >= 0 ? col('允許半徑') : col('半徑'), st: col('狀態') };
+    if (c.name < 0) throw new Error('找不到「名稱」欄位,請使用範本格式');
+    var out = [];
+    for (var i = 1; i < aoa.length; i++) {
+      var row = aoa[i];
+      if (!row.some(function (x) { return String(x).trim() !== ''; })) continue;
+      function g(k) { return c[k] >= 0 ? String(row[c[k]] == null ? '' : row[c[k]]).trim() : ''; }
+      var st = g('st');
+      out.push({ line: i + 1, name: g('name'), query: g('addr'), lat: g('lat'), lng: g('lng'), radius: g('rad'), active: st !== '停用' });
+    }
+    if (!out.length) throw new Error('沒有找到資料列');
+    if (out.length > 300) throw new Error('單次最多匯入 300 筆,目前有 ' + out.length + ' 筆');
     return out;
   }
 
@@ -502,7 +545,7 @@
   /* ---------- 打卡地點 ---------- */
   async function viewLocations(main) {
     var list = await call('locations.list');
-    main.innerHTML = '<div class="row"><h2 style="margin:0">打卡地點(GPS 定點)</h2><div class="spacer"></div><button class="primary" id="add">新增地點</button></div><div class="card">' +
+    main.innerHTML = '<div class="row"><h2 style="margin:0">打卡地點(GPS 定點)</h2><div class="spacer"></div><button id="ltpl">下載 Excel 範本</button><button id="limp">Excel 批次匯入</button><button class="primary" id="add">新增地點</button></div><input type="file" id="limpf" accept=".xlsx,.xls,.csv" class="hidden"><div class="card">' +
       table(['名稱', '緯度', '經度', '半徑(公尺)', '啟用', ''], list.map(function (l) {
         return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
           '</td><td><button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
@@ -565,6 +608,66 @@
           await call('locations.save', { id: l.id, name: val('l_name').trim(), lat: Number(val('l_lat')), lng: Number(val('l_lng')), radius: Number(val('l_rad')), active: val('l_act') === '1' });
           d.close(); toast('已儲存'); viewLocations(main);
         }, $('#lf button[type=submit]', d));
+      };
+    }
+
+    $('#ltpl').onclick = function () { guard(downloadLocTemplate, this); };
+    $('#limp').onclick = function () { $('#limpf').value = ''; $('#limpf').click(); };
+    $('#limpf').onchange = function () {
+      var f = this.files[0];
+      if (!f) return;
+      guard(async function () { var rows = await readLocFile(f); await resolveAndPreview(rows, f.name); });
+    };
+    async function resolveAndPreview(rows, fname) {
+      var d = openDialog('<h3>批次匯入打卡地點</h3><p>檔案:' + esc(fname) + ',共 <b>' + rows.length + '</b> 筆。</p><div id="lprog" class="muted">準備中…</div><div id="lbody"></div>' +
+        '<div class="row" style="margin-top:12px"><button class="primary hidden" id="lgo">匯入</button><button type="button" data-close>關閉</button></div>');
+      var cancelled = false;
+      d.addEventListener('close', function () { cancelled = true; viewLocations(main); }, { once: true });
+      var seenName = {};
+      rows.forEach(function (r) { // 先做基本檢查,有問題的列不再搜尋
+        var rad = r.radius === '' ? 100 : Number(r.radius);
+        if (!r.name) r.pre = '名稱必填';
+        else if (seenName[r.name]) r.pre = '名稱與第 ' + seenName[r.name] + ' 列重複';
+        else if (!(rad >= 10 && rad <= 5000)) r.pre = '半徑需介於 10~5000 公尺';
+        else if ((r.lat !== '' || r.lng !== '') && !(isFinite(Number(r.lat)) && isFinite(Number(r.lng)) && r.lat !== '' && r.lng !== '' && Math.abs(Number(r.lat)) <= 90 && Math.abs(Number(r.lng)) <= 180)) r.pre = '經緯度無效';
+        if (r.name && !seenName[r.name]) seenName[r.name] = r.line;
+      });
+      var need = rows.filter(function (r) { return !r.pre && !(r.lat !== '' && r.lng !== ''); }).length, done = 0;
+      for (var i = 0; i < rows.length && !cancelled; i++) {
+        var r = rows[i];
+        if (r.pre) { r.status = 'bad'; r.note = r.pre; continue; }
+        if (r.lat !== '' && r.lng !== '') { r.status = 'ok'; r.note = '使用檔案中的座標'; continue; }
+        var q = r.query || r.name;
+        $('#lprog', d).textContent = '搜尋座標 ' + (++done) + ' / ' + need + ':' + q;
+        if (!q) { r.status = 'bad'; r.note = '沒有名稱或地址可搜尋'; continue; }
+        try {
+          var list = await geocode(q);
+          if (!list.length) { r.status = 'bad'; r.note = '找不到座標,請改填完整地址或直接填經緯度'; }
+          else { r.lat = Number(list[0].lat).toFixed(6); r.lng = Number(list[0].lng).toFixed(6); r.status = list.length > 1 ? 'warn' : 'ok'; r.note = (list.length > 1 ? '有 ' + list.length + ' 個結果,已採用第一筆:' : '') + list[0].name; }
+        } catch (e) { r.status = 'bad'; r.note = e.message; }
+      }
+      if (cancelled) return;
+      var okRows = rows.filter(function (r) { return r.status !== 'bad'; });
+      $('#lprog', d).textContent = '';
+      $('#lbody', d).innerHTML = '<p>可匯入 <b>' + okRows.length + '</b> 筆;' + (rows.length - okRows.length) + ' 筆有問題將略過。<span class="hint">請點「地圖」確認自動搜尋到的位置是否正確(黃色為有多個結果)。</span></p>' +
+        '<div class="tablewrap" style="max-height:300px;overflow:auto">' + table(['列', '名稱', '座標', '半徑', '結果', ''], rows.map(function (r) {
+          var cls = r.status === 'ok' ? 'ok' : r.status === 'warn' ? 'warn' : 'bad';
+          return '<tr><td>' + r.line + '</td><td>' + esc(r.name) + '</td><td>' + (r.status === 'bad' ? '' : esc(r.lat) + ', ' + esc(r.lng)) + '</td><td>' + esc(r.radius || 100) + '</td><td class="wrap"><span class="badge ' + cls + '">' + (r.status === 'ok' ? '正常' : r.status === 'warn' ? '請確認' : '略過') + '</span> ' + esc(r.note) + '</td><td>' +
+            (r.status === 'bad' ? '' : '<a target="_blank" rel="noopener" href="https://www.google.com/maps?q=' + encodeURIComponent(r.lat + ',' + r.lng) + '">地圖</a>') + '</td></tr>';
+        })) + '</div>';
+      var go = $('#lgo', d);
+      if (!okRows.length) return;
+      go.textContent = '匯入 ' + okRows.length + ' 筆'; go.classList.remove('hidden');
+      go.onclick = function () {
+        guard(async function () {
+          var res = await call('locations.import', { rows: okRows.map(function (r) { return { line: r.line, name: r.name, lat: Number(r.lat), lng: Number(r.lng), radius: r.radius, active: r.active }; }) });
+          if (!res.applied) {
+            $('#lbody', d).innerHTML = '<p><span class="badge bad">未匯入</span> 後端驗證有問題:</p>' + table(['列', '名稱', '問題'], res.errors.map(function (e) { return '<tr><td>' + e.line + '</td><td>' + esc(e.name) + '</td><td class="wrap">' + esc(e.message) + '</td></tr>'; }));
+            return;
+          }
+          go.classList.add('hidden');
+          $('#lbody', d).innerHTML = '<p><span class="badge ok">匯入完成</span> 新增 ' + res.created + ' 個、更新 ' + res.updated + ' 個,略過 ' + (rows.length - okRows.length) + ' 個。</p>';
+        }, go);
       };
     }
     $('#add').onclick = function () { form(null); };

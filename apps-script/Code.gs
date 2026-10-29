@@ -119,6 +119,7 @@ var ROUTES = {
   'locations.save': locationsSave_,
   'locations.delete': locationsDelete_,
   'locations.geocode': locationsGeocode_,
+  'locations.import': locationsImport_,
   'shifts.types': shiftTypes_,
   'shifts.list': shiftsList_,
   'shifts.save': shiftsSave_
@@ -494,6 +495,45 @@ function locationsGeocode_(u, p) {
   return res.results.slice(0, 5).map(function (r) {
     return { name: r.formatted_address, lat: r.geometry.location.lat, lng: r.geometry.location.lng, source: 'google' };
   });
+}
+
+/**
+ * 批次匯入打卡地點。p.rows = [{line,name,lat,lng,radius,active}]
+ * 以「名稱」為鍵:名稱已存在就更新,否則新增。全部通過驗證才寫入。
+ */
+function locationsImport_(u, p) {
+  requireAdmin_(u);
+  var rows = p.rows || [];
+  if (!rows.length) throw new Error('沒有可匯入的資料');
+  if (rows.length > 300) throw new Error('單次最多匯入 300 筆');
+  var sh = sheet_(SHEETS.LOC);
+  var n = sh.getLastRow();
+  var values = n > 1 ? sh.getRange(2, 1, n - 1, 6).getValues() : [];
+  var index = {};
+  values.forEach(function (r, i) { index[String(r[1]).trim()] = i; });
+
+  var errors = [], seen = {}, clean = [];
+  rows.forEach(function (r, i) {
+    var line = r.line || (i + 2), name = String(r.name == null ? '' : r.name).trim();
+    var lat = Number(r.lat), lng = Number(r.lng), radius = Number(r.radius === '' || r.radius == null ? 100 : r.radius), err = [];
+    if (!name) err.push('名稱必填');
+    else if (seen[name]) err.push('名稱與第 ' + seen[name] + ' 列重複');
+    if (!isFinite(lat) || !isFinite(lng) || r.lat === '' || r.lng === '' || Math.abs(lat) > 90 || Math.abs(lng) > 180) err.push('經緯度無效');
+    if (!(radius >= 10 && radius <= 5000)) err.push('半徑需介於 10~5000 公尺');
+    if (name) seen[name] = line;
+    if (err.length) errors.push({ line: line, name: name, message: err.join(';') });
+    clean.push({ name: name, lat: lat, lng: lng, radius: radius, active: r.active !== false });
+  });
+  if (errors.length) return { applied: false, errors: errors, created: 0, updated: 0 };
+
+  var created = 0, updated = 0, stamp = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyMMddHHmmss');
+  clean.forEach(function (c, i) {
+    var pos = index[c.name];
+    if (pos !== undefined) { values[pos] = [values[pos][0], c.name, c.lat, c.lng, c.radius, c.active]; updated++; }
+    else { values.push(['L' + stamp + ('0' + i).slice(-2), c.name, c.lat, c.lng, c.radius, c.active]); index[c.name] = values.length - 1; created++; }
+  });
+  sh.getRange(2, 1, values.length, 6).setValues(values);
+  return { applied: true, errors: [], created: created, updated: updated };
 }
 
 /* ============ 排班 ============ */

@@ -184,6 +184,29 @@
       if (i >= 0) db.locs[i] = rec; else db.locs.push(rec);
       return rec.id;
     },
+    'locations.import': function (db, u, p) {
+      needAdmin(u);
+      var rows = p.rows || [];
+      if (!rows.length) throw new Error('沒有可匯入的資料');
+      var errors = [], seen = {}, clean = [];
+      rows.forEach(function (r, i) {
+        var line = r.line || i + 2, name = String(r.name == null ? '' : r.name).trim(), lat = Number(r.lat), lng = Number(r.lng), radius = Number(r.radius === '' || r.radius == null ? 100 : r.radius), err = [];
+        if (!name) err.push('名稱必填'); else if (seen[name]) err.push('名稱與第 ' + seen[name] + ' 列重複');
+        if (!isFinite(lat) || !isFinite(lng) || r.lat === '' || r.lng === '' || Math.abs(lat) > 90 || Math.abs(lng) > 180) err.push('經緯度無效');
+        if (!(radius >= 10 && radius <= 5000)) err.push('半徑需介於 10~5000 公尺');
+        if (name) seen[name] = line;
+        if (err.length) errors.push({ line: line, name: name, message: err.join(';') });
+        clean.push({ name: name, lat: lat, lng: lng, radius: radius, active: r.active !== false });
+      });
+      if (errors.length) return { applied: false, errors: errors, created: 0, updated: 0 };
+      var created = 0, updated = 0;
+      clean.forEach(function (c, i) {
+        var e = db.locs.filter(function (x) { return x.name === c.name; })[0];
+        if (e) { e.lat = c.lat; e.lng = c.lng; e.radius = c.radius; e.active = c.active; updated++; }
+        else { db.locs.push({ id: 'L' + Date.now() + i, name: c.name, lat: c.lat, lng: c.lng, radius: c.radius, active: c.active }); created++; }
+      });
+      return { applied: true, errors: [], created: created, updated: updated };
+    },
     'locations.delete': function (db, u, p) { needAdmin(u); db.locs = db.locs.filter(function (l) { return l.id !== p.id; }); return true; },
     'shifts.types': function (db) { return db.shiftTypes; },
     'shifts.list': function (db, u, p) {
