@@ -11,7 +11,8 @@ var SHEETS = {
   PUNCH: '打卡',
   LOC: '地點',
   SHIFT: '排班',
-  SHIFT_TYPE: '班別'
+  SHIFT_TYPE: '班別',
+  LOGIN: '登入紀錄'
 };
 
 var HEADERS = {
@@ -21,7 +22,8 @@ var HEADERS = {
   '打卡': ['時間', '日期', '員編', '姓名', '類型', '緯度', '經度', '距離(公尺)', '地點', '結果'],
   '地點': ['地點ID', '名稱', '緯度', '經度', '半徑(公尺)', '啟用'],
   '排班': ['日期', '員編', '姓名', '班別', '上班', '下班'],
-  '班別': ['班別', '上班', '下班']
+  '班別': ['班別', '上班', '下班'],
+  '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置']
 };
 
 var TOKEN_TTL = 6 * 60 * 60; // 秒
@@ -122,7 +124,9 @@ var ROUTES = {
   'locations.import': locationsImport_,
   'shifts.types': shiftTypes_,
   'shifts.list': shiftsList_,
-  'shifts.save': shiftsSave_
+  'shifts.save': shiftsSave_,
+  'login.log': loginLog_,
+  'login.my': loginMy_
 };
 
 /* ============ 認證 ============ */
@@ -130,21 +134,73 @@ var ROUTES = {
 function login_(p) {
   var id = String(p.id || '').trim();
   var pwd = String(p.password || '');
+  var ip = cleanIp_(p.ip);
+  var ua = String(p.ua || '').slice(0, 200);
   if (!id || !pwd) return { ok: false, error: '請輸入員編與密碼' };
   var cache = CacheService.getScriptCache();
   var failKey = 'fail_' + id;
   var fails = Number(cache.get(failKey) || 0);
-  if (fails >= 5) return { ok: false, error: '登入失敗次數過多,請 15 分鐘後再試' };
+  if (fails >= 5) {
+    logLogin_(id, '', '已鎖定', ip, ua);
+    return { ok: false, error: '登入失敗次數過多,請 15 分鐘後再試' };
+  }
 
   var emp = findEmp_(id);
   if (!emp || emp['狀態'] !== '在職' || emp['密碼雜湊'] !== hash_(pwd)) {
     cache.put(failKey, String(fails + 1), 900);
+    logLogin_(id, emp ? emp['姓名'] : '', '失敗', ip, ua);
     return { ok: false, error: '員編或密碼錯誤' };
   }
   cache.remove(failKey);
+  var last = lastLogin_(id); // 先取上一次登入,再寫入這一次
+  logLogin_(id, emp['姓名'], '成功', ip, ua);
   var token = Utilities.getUuid() + Utilities.getUuid();
   cache.put('tok_' + token, id, TOKEN_TTL);
-  return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234') } };
+  return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234'), lastLogin: last, ip: ip } };
+}
+
+/** IP 由瀏覽器自行回報(Apps Script 看不到連線來源),只接受 IPv4 / IPv6 格式,其他一律記為「未知」 */
+function cleanIp_(v) {
+  v = String(v || '').trim();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v) || /^[0-9a-fA-F:]{2,45}$/.test(v) && v.indexOf(':') >= 0) return v;
+  return '未知';
+}
+
+function logLogin_(id, name, result, ip, ua) {
+  try {
+    sheet_(SHEETS.LOGIN).appendRow([now_(), String(id).slice(0, 30), name, result, ip, ua]);
+  } catch (e) { /* 紀錄失敗不影響登入 */ }
+}
+
+function loginRow_(r) { return { time: r['時間'], empId: r['員編'], name: r['姓名'], result: r['結果'], ip: r['IP'], ua: r['裝置'] }; }
+
+function lastLogin_(id) {
+  try {
+    var sh = sheet_(SHEETS.LOGIN);
+    var n = sh.getLastRow();
+    if (n < 2) return null;
+    var from = Math.max(2, n - 1999);
+    var vals = sh.getRange(from, 1, n - from + 1, 6).getValues();
+    for (var i = vals.length - 1; i >= 0; i--) if (String(vals[i][1]) === String(id) && vals[i][3] === '成功') return { time: vals[i][0], ip: vals[i][4] };
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+/** 管理員:查詢登入紀錄(可依月份、員編篩選),最新在前,最多 500 筆 */
+function loginLog_(u, p) {
+  requireAdmin_(u);
+  var month = p.month ? String(p.month) : '';
+  var emp = p.empId ? String(p.empId).trim() : '';
+  var out = readObjs_(SHEETS.LOGIN).filter(function (r) {
+    return (!month || String(r['時間']).slice(0, 7) === month) && (!emp || String(r['員編']) === emp);
+  }).map(loginRow_).reverse();
+  return out.slice(0, 500);
+}
+
+/** 員工:自己最近的登入紀錄(20 筆),可用來發現可疑登入 */
+function loginMy_(u) {
+  var out = readObjs_(SHEETS.LOGIN).filter(function (r) { return String(r['員編']) === String(u['員編']); }).map(loginRow_).reverse();
+  return out.slice(0, 20);
 }
 
 function auth_(token) {
@@ -592,7 +648,14 @@ function shiftsSave_(u, p) {
 /* ============ 共用工具 ============ */
 
 function sheet_(name) {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh && name === SHEETS.LOGIN) { // 登入紀錄表第一次使用時自動建立,不需要重新執行 setup()
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('A:B').setNumberFormat('@');
+  }
   if (!sh) throw new Error('缺少工作表「' + name + '」,請先執行 setup()');
   return sh;
 }

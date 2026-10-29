@@ -125,6 +125,11 @@
       return { applied: true, errors: [], created: created, updated: updated };
     },
     'locations.geocode': function () { return []; }, // 示範模式沒有後端,前端會改用 OpenStreetMap 查詢
+    'login.log': function (db, u, p) {
+      needAdmin(u);
+      return (db.loginLog || []).filter(function (l) { return (!p.month || l.time.slice(0, 7) === p.month) && (!p.empId || l.empId === String(p.empId).trim()); }).slice().reverse().slice(0, 500);
+    },
+    'login.my': function (db, u) { return (db.loginLog || []).filter(function (l) { return l.empId === u.id; }).slice().reverse().slice(0, 20); },
     'leave.types': function (db) { return db.leaveTypes; },
     'leave.balance': function (db, u) { return balance(db, u); },
     'leave.apply': function (db, u, p) {
@@ -232,10 +237,20 @@
   async function demo(action, params) {
     var db = load();
     if (action === 'login') {
-      var e = db.emps.filter(function (x) { return x.id === String(params.id || '').trim() && x.status === '在職'; })[0];
-      if (!e || e.password !== params.password) throw new Error('員編或密碼錯誤');
+      db.loginLog = db.loginLog || [];
+      var ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(params.ip || '') || (/^[0-9a-fA-F:]{2,45}$/.test(params.ip || '') && String(params.ip).indexOf(':') >= 0) ? params.ip : '未知';
+      var lid = String(params.id || '').trim();
+      var e = db.emps.filter(function (x) { return x.id === lid && x.status === '在職'; })[0];
+      if (!e || e.password !== params.password) {
+        db.loginLog.push({ time: nowStr(), empId: lid.slice(0, 30), name: e ? e.name : '', result: '失敗', ip: ip, ua: String(params.ua || '').slice(0, 200) });
+        save(db);
+        throw new Error('員編或密碼錯誤');
+      }
+      var last = db.loginLog.filter(function (l) { return l.empId === e.id && l.result === '成功'; }).pop();
+      db.loginLog.push({ time: nowStr(), empId: e.id, name: e.name, result: '成功', ip: ip, ua: String(params.ua || '').slice(0, 200) });
+      save(db);
       setToken('demo:' + e.id);
-      return { token: 'demo:' + e.id, user: pub(e), mustChange: false };
+      return { token: 'demo:' + e.id, user: pub(e), mustChange: false, lastLogin: last ? { time: last.time, ip: last.ip } : null, ip: ip };
     }
     var u = me(db);
     var h = demoRoutes[action];
@@ -248,8 +263,9 @@
   window.API = {
     demo: DEMO,
     call: function (action, params) { return DEMO ? demo(action, params) : remote(action, params); },
-    login: async function (id, password) {
-      var r = await (DEMO ? demo('login', { id: id, password: password }) : remote('login', { id: id, password: password }));
+    login: async function (id, password, meta) {
+      var params = { id: id, password: password, ip: (meta && meta.ip) || '', ua: (meta && meta.ua) || '' };
+      var r = await (DEMO ? demo('login', params) : remote('login', params));
       setToken(r.token);
       return r;
     },

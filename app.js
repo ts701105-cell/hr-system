@@ -173,6 +173,27 @@
     return out;
   }
 
+
+  /* ---------- 取得本機對外 IP(Apps Script 看不到來源 IP,由瀏覽器查詢後一併回報) ---------- */
+  var ipPromise = null;
+  function getIP() {
+    if (!ipPromise) {
+      var tryUrl = function (url) {
+        var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 4000);
+        return fetch(url, { signal: ctl.signal, cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) { clearTimeout(t); return String(j.ip || ''); });
+      };
+      ipPromise = tryUrl('https://api64.ipify.org?format=json').catch(function () { return tryUrl('https://api.ipify.org?format=json'); }).catch(function () { return ''; })
+        .then(function (ip) { return /^[0-9a-fA-F:.]{3,45}$/.test(ip) ? ip : ''; });
+    }
+    return ipPromise;
+  }
+  function shortUA(ua) {
+    ua = String(ua || '');
+    var os = /Android/i.test(ua) ? 'Android' : /iPhone|iPad|iOS/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'Windows' : /Mac OS/i.test(ua) ? 'macOS' : /Linux/i.test(ua) ? 'Linux' : '';
+    var br = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+    return (os + ' ' + br).trim() || (ua ? ua.slice(0, 30) : '');
+  }
+
   /* ---------- 登入 ---------- */
   function renderLogin() {
     clearInterval(clockTimer);
@@ -180,15 +201,19 @@
       '<form id="lf" class="form" style="grid-template-columns:1fr">' + field('li', '員編', '', 'text', 'autocomplete="username" required') +
       field('lp', '密碼', '', 'password', 'autocomplete="current-password" required') +
       '<button class="primary" type="submit">登入</button></form>' +
+      '<p class="hint" id="myip">正在取得您的 IP…</p><p class="hint">登入時系統會記錄時間與 IP 位址,供安全稽核使用。</p>' +
       (API.demo ? '<p class="hint">示範帳號:管理員 A001 / admin1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
+    getIP().then(function (ip) { var el = document.getElementById('myip'); if (el) el.textContent = ip ? '您目前的 IP:' + ip : '無法取得 IP(仍可登入,紀錄會標示為「未知」)'; });
     $('#lf').onsubmit = function (e) {
       e.preventDefault();
       guard(async function () {
-        var r = await API.login(val('li').trim(), val('lp'));
+        var ip = await getIP();
+        var r = await API.login(val('li').trim(), val('lp'), { ip: ip, ua: navigator.userAgent });
         user = r.user;
         location.hash = '#/punch';
         renderShell();
-        if (r.mustChange) { toast('請先修改預設密碼', true); location.hash = '#/password'; }
+        var msg = '登入 IP:' + (ip || '未知') + (r.lastLogin ? '。上次登入:' + r.lastLogin.time + '(' + r.lastLogin.ip + ')' : '。這是您第一次登入');
+        if (r.mustChange) { toast('請先修改預設密碼', true); location.hash = '#/password'; } else toast(msg);
       }, $('#lf button'));
     };
   }
@@ -202,6 +227,7 @@
     { path: 'attendance', label: '出勤報表', roles: ['manager', 'admin'], group: '主管', view: viewAttendance },
     { path: 'employees', label: '員工資料', roles: ['admin'], group: '管理', view: viewEmployees },
     { path: 'locations', label: '打卡地點', roles: ['admin'], group: '管理', view: viewLocations },
+    { path: 'loginlog', label: '登入紀錄', roles: ['admin'], group: '管理', view: viewLoginLog },
     { path: 'password', label: '修改密碼', roles: ['employee', 'manager', 'admin'], group: '帳號', view: viewPassword }
   ];
 
@@ -209,9 +235,10 @@
     if (!user) return renderLogin();
     var roleName = { admin: '管理員', manager: '主管', employee: '員工' }[user.role];
     app.innerHTML = '<div class="topbar"><div class="brand">' + esc(cfg.COMPANY_NAME || '人事管理系統') + (API.demo ? '<span class="demo-tag">示範</span>' : '') + '</div>' +
-      '<div class="row"><span class="who">' + esc(user.name) + '(' + esc(user.id) + ' · ' + roleName + ')</span><button class="sm" id="lo">登出</button></div></div>' +
+      '<div class="row"><span class="who">' + esc(user.name) + '(' + esc(user.id) + ' · ' + roleName + ')</span><span class="who" id="ipb"></span><button class="sm" id="lo">登出</button></div></div>' +
       '<div class="layout"><nav class="nav" id="nav"></nav><main id="main"></main></div>';
     $('#lo').onclick = function () { API.logout(); user = null; location.hash = ''; renderLogin(); };
+    getIP().then(function (ip) { var el = document.getElementById('ipb'); if (el && ip) el.textContent = 'IP ' + ip; });
     route();
   }
 
@@ -680,16 +707,35 @@
     });
   }
 
+
+  /* ---------- 登入紀錄 ---------- */
+  function loginRows(list) {
+    return table(['時間', '員編', '姓名', '結果', 'IP', '裝置'], list.map(function (l) {
+      var cls = l.result === '成功' ? 'ok' : 'bad';
+      return '<tr><td>' + esc(l.time) + '</td><td>' + esc(l.empId) + '</td><td>' + esc(l.name) + '</td><td><span class="badge ' + cls + '">' + esc(l.result) + '</span></td><td>' + esc(l.ip) + '</td><td title="' + esc(l.ua) + '">' + esc(shortUA(l.ua)) + '</td></tr>';
+    }), '沒有紀錄');
+  }
+  async function viewLoginLog(main) {
+    var month = (viewLoginLog.month = viewLoginLog.month || curMonth()), emp = viewLoginLog.emp || '';
+    var list = await call('login.log', { month: month, empId: emp });
+    var fail = list.filter(function (l) { return l.result !== '成功'; }).length;
+    main.innerHTML = '<div class="row"><h2 style="margin:0">登入紀錄</h2><div class="spacer"></div><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><input id="emp" placeholder="員編(可空白)" value="' + esc(emp) + '" style="width:130px"><button id="q">查詢</button></div>' +
+      '<div class="card"><p class="muted">共 ' + list.length + ' 筆(最多顯示 500 筆),其中失敗 / 鎖定 ' + fail + ' 筆。IP 由瀏覽器回報,僅供參考。</p>' + loginRows(list) + '</div>';
+    $('#q').onclick = function () { viewLoginLog.month = val('mon') || curMonth(); viewLoginLog.emp = val('emp').trim(); viewLoginLog(main); };
+  }
+
   /* ---------- 修改密碼 ---------- */
-  function viewPassword(main) {
+  async function viewPassword(main) {
     main.innerHTML = '<h2>修改密碼</h2><div class="card" style="max-width:420px"><form id="pf" class="form" style="grid-template-columns:1fr">' +
       field('p0', '目前密碼', '', 'password', 'autocomplete="current-password" required') + field('p1', '新密碼(至少 8 碼)', '', 'password', 'autocomplete="new-password" minlength="8" required') +
-      field('p2', '再輸入一次新密碼', '', 'password', 'autocomplete="new-password" required') + '<button class="primary" type="submit">更新密碼</button></form></div>';
+      field('p2', '再輸入一次新密碼', '', 'password', 'autocomplete="new-password" required') + '<button class="primary" type="submit">更新密碼</button></form></div>' +
+      '<div class="card"><h3>我的近期登入紀錄</h3><p class="hint">若看到不是您本人的登入(陌生 IP 或時間),請立即修改密碼並通知人資。</p><div id="mylog" class="muted">載入中…</div></div>';
     $('#pf').onsubmit = function (e) {
       e.preventDefault();
       if (val('p1') !== val('p2')) return toast('兩次輸入的新密碼不一致', true);
       guard(async function () { await call('changePassword', { oldPassword: val('p0'), newPassword: val('p1') }); toast('密碼已更新'); $('#pf').reset(); }, $('#pf button'));
     };
+    try { $('#mylog').outerHTML = '<div id="mylog">' + loginRows(await call('login.my')) + '</div>'; } catch (e) { $('#mylog').textContent = e.message; }
   }
 
   /* ---------- 啟動 ---------- */
