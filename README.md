@@ -82,5 +82,6 @@ Repo → Settings → Pages → Source 選 `Deploy from a branch`,Branch 選 `ma
 - **GPS 為瀏覽器回報的座標,技術上可被偽造(例如模擬定位 App)**。本系統能擋住一般誤打與遠端代打,
   若需要更嚴格的防弊,需搭配原生 App 或其他驗證方式。
 - 員工個資只存在你的 Google 試算表,不在這個 repo 中。
-- `vendor/xlsx.mini.min.js` 為 SheetJS 0.18.5;該版本有已知的「讀取惡意構造檔案」弱點(prototype pollution),所以請只匯入自己製作或可信來源的 Excel 檔,且僅管理員可使用匯入功能。請勿把試算表公開分享。
+- `vendor/xlsx.mini.min.js` 為 SheetJS 0.18.5;該版本有已知的「讀取惡意構造檔案」弱點(prototype pollution),所以請只匯入自己製作或可信來源的 Excel 檔,且僅管理員可使用匯入功能。
+- 請勿把 Google 試算表公開分享(裡面有員工個資與密碼雜湊)。
 - Apps Script 「任何人」存取指的是任何人都能呼叫 API,但沒有登入 token 就拿不到資料。

@@ -101,7 +101,7 @@
         if (!name) err.push('姓名必填');
         if (!role) err.push('角色必須是 員工/主管/管理員');
         if (status !== '在職' && status !== '離職') err.push('狀態必須是 在職 或 離職');
-        if (hire && !(/^\d{4}-\d{2}-\d{2}$/.test(hire) && new Date(hire + 'T00:00:00Z').toISOString().slice(0, 10) === hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
+        if (hire && !(/^\d{4}-\d{2}-\d{2}$/.test(hire) && !isNaN(new Date(hire + 'T00:00:00Z').getTime()) && new Date(hire + 'T00:00:00Z').toISOString().slice(0, 10) === hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
         if (pwd && pwd.length < 8) err.push('初始密碼至少 8 碼');
         if (id && id === u.id && (role !== 'admin' || status !== '在職')) err.push('不能降級或停用自己');
         if (id) seen[id] = line;
