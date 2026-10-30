@@ -61,6 +61,7 @@
   }
   function scope(db, u) { return db.emps.filter(function (e) { return u.role === 'admin' || e.manager === u.id; }).map(function (e) { return e.id; }); }
   function needMgr(u) { if (u.role === 'employee') throw new Error('需要主管權限'); }
+  function demoQr(id, w) { var s = 'qr:' + id + ':' + w, h = 5381; for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(16); }
   function needAdmin(u) { if (u.role !== 'admin') throw new Error('需要管理員權限'); }
   function balance(db, u) {
     var y = String(new Date().getFullYear());
@@ -163,7 +164,25 @@
       if (scope(db, u).indexOf(l.empId) < 0) throw new Error('非您的簽核範圍');
       l.status = p.decision; l.reviewer = u.name; l.comment = p.comment || ''; l.reviewedAt = nowStr(); return true;
     },
+    'qr.token': function (db, u, p) {
+      needAdmin(u);
+      var l = db.locs.filter(function (x) { return x.id === p.id && x.active; })[0];
+      if (!l) throw new Error('找不到啟用中的地點');
+      return { token: demoQr(l.id, Math.floor(Date.now() / 60000)), window: 60, name: l.name };
+    },
     'punch.do': function (db, u, p) {
+      if (p.qr) {
+        var ql = db.locs.filter(function (x) { return x.id === (p.qr && p.qr.loc) && x.active; })[0];
+        if (!ql) throw new Error('QR 對應的地點不存在或已停用');
+        var w = Math.floor(Date.now() / 60000), okq = false;
+        for (var i = 0; i <= 2; i++) if (demoQr(ql.id, w - i) === String(p.qr.token)) okq = true;
+        if (!okq) throw new Error('QR 已過期或無效,請重新掃描目前顯示的 QR');
+        var has = p.lat != null && p.lat !== '' && isFinite(Number(p.lat)) && isFinite(Number(p.lng));
+        var qd = has ? Math.round(dist(Number(p.lat), Number(p.lng), ql.lat, ql.lng)) : '';
+        db.punches.push({ time: nowStr(), date: today(), empId: u.id, name: u.name, type: p.type, distance: qd, place: ql.name + '(QR)', result: '成功' });
+        save(db);
+        return { time: nowStr(), place: ql.name + '(QR)', distance: qd };
+      }
       var lat = Number(p.lat), lng = Number(p.lng);
       if (!isFinite(lat) || !isFinite(lng)) throw new Error('定位資料無效');
       var best = null;

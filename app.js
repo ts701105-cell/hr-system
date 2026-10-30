@@ -84,6 +84,38 @@
     });
     return xlsxPromise;
   }
+  var libPromises = {};
+  function loadLib(src, name) {
+    if (window[name]) return Promise.resolve(window[name]);
+    if (!libPromises[src]) libPromises[src] = new Promise(function (resolve, reject) {
+      var sc = document.createElement('script');
+      sc.src = src;
+      sc.onload = function () { resolve(window[name]); };
+      sc.onerror = function () { delete libPromises[src]; reject(new Error('無法載入 QR 元件')); };
+      document.head.appendChild(sc);
+    });
+    return libPromises[src];
+  }
+
+  /* ---------- QR 打卡:連結 / 掃描內容解析 ---------- */
+  var pendingQr = null; // 掃描(或點開連結)取得、尚未使用的 QR
+  function parseQrText(text) {
+    text = String(text || '').trim();
+    var i = text.indexOf('#/qr?');
+    if (i < 0) return null;
+    var sp = new URLSearchParams(text.slice(i + 5));
+    var loc = sp.get('l'), tok = sp.get('t');
+    if (!loc || !tok || loc.length > 40 || !/^[0-9a-f]{4,64}$/i.test(tok)) return null;
+    return { loc: loc, token: tok };
+  }
+  function captureQr() {
+    if (!/^#\/qr\?/.test(location.hash)) return false;
+    var q = parseQrText(location.hash);
+    history.replaceState(null, '', location.pathname + location.search + '#/punch');
+    if (q) pendingQr = q;
+    return !!q;
+  }
+
   var EMP_COLS = [['員編', 'id'], ['姓名', 'name'], ['部門', 'dept'], ['職稱', 'title'], ['角色', 'role'], ['主管員編', 'manager'], ['到職日', 'hireDate'], ['狀態', 'status'], ['Email', 'email'], ['電話', 'phone'], ['初始密碼', 'password']];
   function normDate(v) {
     v = String(v == null ? '' : v).trim();
@@ -245,6 +277,7 @@
   function route() {
     if (!user) return;
     clearInterval(clockTimer);
+    captureQr();
     var path = (location.hash.replace(/^#\/?/, '') || 'punch');
     var allowed = ROUTES.filter(function (r) { return r.roles.indexOf(user.role) >= 0; });
     var cur = allowed.filter(function (r) { return r.path === path; })[0] || allowed[0];
@@ -276,6 +309,73 @@
     });
   }
 
+  /* 員工端:開相機掃描 QR(也可直接用手機內建相機掃,會開啟本系統並帶入) */
+  async function scanQr(onFound) {
+    var stream = null, raf = 0, done = false;
+    function stop() { done = true; cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    var d = openDialog('<h3>掃描打卡 QR</h3><video id="qv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video><canvas id="qc" class="hidden"></canvas>' +
+      '<p class="hint" id="qmsg">正在開啟相機…</p><div class="row" style="margin-top:8px"><button data-close>取消</button></div>');
+    d.onclose = stop;
+    var c = d.querySelector('[data-close]'); if (c) c.onclick = function () { d.close(); };
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nocam');
+      var jsq = await loadLib('vendor/jsQR.js', 'jsQR');
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      if (done) return stop();
+      var v = $('#qv'); v.srcObject = stream; await v.play();
+      $('#qmsg').textContent = '請將鏡頭對準現場顯示的 QR';
+      var cv = $('#qc'), cx = cv.getContext('2d', { willReadFrequently: true });
+      (function loop() {
+        if (done) return;
+        if (v.videoWidth) {
+          var sc = Math.min(1, 640 / v.videoWidth);
+          cv.width = Math.round(v.videoWidth * sc); cv.height = Math.round(v.videoHeight * sc);
+          cx.drawImage(v, 0, 0, cv.width, cv.height);
+          var img = cx.getImageData(0, 0, cv.width, cv.height);
+          var code = jsq(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+          if (code && code.data) {
+            var q = parseQrText(code.data);
+            if (q) { stop(); d.close(); onFound(q); return; }
+            $('#qmsg').textContent = '這不是本系統的打卡 QR,請重試';
+          }
+        }
+        raf = requestAnimationFrame(loop);
+      })();
+    } catch (e) {
+      stop();
+      var m = $('#qmsg');
+      if (m) m.textContent = e.name === 'NotAllowedError' ? '相機權限被拒絕,請在瀏覽器設定中允許,或改用手機內建相機掃描 QR。' : '無法開啟相機,請改用手機內建相機掃描 QR,掃描後會自動開啟本系統。';
+    }
+  }
+
+  /* 管理員端:顯示會自動更新的動態 QR(放在櫃台平板 / 電腦持續顯示) */
+  function showLocQr(loc) {
+    var timer = 0, left = 0, alive = true;
+    var d = openDialog('<h3>' + esc(loc.name) + ' 打卡 QR</h3><div id="qrbox" style="max-width:360px;margin:0 auto;min-height:200px"></div>' +
+      '<p class="hint" id="qrmsg">產生中…</p><p class="hint">請持續顯示此畫面讓員工掃描。QR 約每 30 秒自動更新,舊的 QR 約 3 分鐘後失效,拍照轉傳無法長期使用。</p>' +
+      '<div class="row" style="margin-top:8px"><button data-close>關閉</button></div>');
+    d.onclose = function () { alive = false; clearInterval(timer); };
+    var c = d.querySelector('[data-close]'); if (c) c.onclick = function () { d.close(); };
+    async function draw() {
+      try {
+        var r = await call('qr.token', { id: loc.id });
+        var gen = await loadLib('vendor/qrcode.js', 'qrcode');
+        if (!alive) return;
+        var url = location.origin + location.pathname + '#/qr?l=' + encodeURIComponent(loc.id) + '&t=' + r.token;
+        var q = gen(0, 'M'); q.addData(url); q.make();
+        $('#qrbox').innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+        left = 30;
+        $('#qrmsg').textContent = '下次更新:' + left + ' 秒';
+      } catch (e) { if (alive) $('#qrmsg').textContent = (e.code === 'AUTH' ? '登入已逾時,請重新登入後再顯示。' : e.message); }
+    }
+    draw();
+    timer = setInterval(function () {
+      left--;
+      if (left <= 0) { left = 30; draw(); }
+      else { var m = $('#qrmsg'); if (m) m.textContent = '下次更新:' + left + ' 秒'; }
+    }, 1000);
+  }
+
   async function viewPunch(main) {
     var today = fmtDate(new Date());
     var res = await Promise.all([call('locations.list'), call('punch.my', { month: curMonth() }), call('shifts.list', { month: curMonth() })]);
@@ -283,13 +383,16 @@
     var records = res[1].filter(function (r) { return r.date === today; });
     var myShift = res[2].filter(function (s) { return s.date === today && s.empId === user.id; })[0];
     var pos = null;
+    var qr = pendingQr; pendingQr = null; // 取用從連結帶進來的 QR
+    function locName(id) { var l = locs.filter(function (x) { return x.id === id; })[0]; return l ? l.name : '未知地點'; }
 
     main.innerHTML = '<h2>打卡</h2><div class="card"><div class="clock" id="clk"></div>' +
       '<div class="muted">' + esc(today) + (myShift ? ' · 今日班別:' + esc(myShift.shift) + (myShift.start ? '(' + esc(myShift.start) + '–' + esc(myShift.end) + ')' : '') : ' · 今日未排班') + '</div>' +
       '<div class="geo" id="geo">尚未定位</div>' +
-      '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button></div>' +
+      '<div class="geo" id="qrst"></div>' +
+      '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button><button id="scan">掃 QR 打卡</button></div>' +
       '<div class="punch-btns"><button class="primary" id="in" disabled>上班打卡</button><button class="ok" id="out" disabled>下班打卡</button></div>' +
-      '<p class="hint">需在設定的打卡地點範圍內才能打卡。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
+      '<p class="hint">需在設定的打卡地點範圍內才能打卡;或掃描現場顯示的 QR(約每分鐘更新一次,過期請重新掃描)。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
       '<div class="card"><h3>今日打卡紀錄</h3><div id="today"></div></div>';
 
     function tick() { $('#clk').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }); }
@@ -297,7 +400,7 @@
 
     function showToday() {
       $('#today').innerHTML = table(['時間', '類型', '地點', '距離', '結果'], records.map(function (r) {
-        return '<tr><td>' + esc(r.time.slice(11)) + '</td><td>' + esc(r.type) + '</td><td>' + esc(r.place) + '</td><td>' + esc(r.distance) + ' m</td><td>' + badge(r.result) + '</td></tr>';
+        return '<tr><td>' + esc(r.time.slice(11)) + '</td><td>' + esc(r.type) + '</td><td>' + esc(r.place) + '</td><td>' + (r.distance === '' || r.distance == null ? '—' : esc(r.distance) + ' m') + '</td><td>' + badge(r.result) + '</td></tr>';
       }), '今天還沒有打卡紀錄');
     }
     showToday();
@@ -314,16 +417,36 @@
           g.innerHTML = '定位精準度約 ' + Math.round(pos.acc) + ' 公尺。距離「' + esc(near.l.name) + '」' + Math.round(near.d) + ' 公尺 — ' +
             (inRange ? '<span class="badge ok">在範圍內</span>' : '<span class="badge bad">超出範圍</span>');
         } else g.textContent = '尚未設定打卡地點';
-        $('#in').disabled = $('#out').disabled = false;
-      } catch (e) { g.textContent = e.message; $('#in').disabled = $('#out').disabled = true; }
+      } catch (e) { pos = null; g.textContent = e.message; }
+      refreshBtns();
+    }
+    function refreshBtns() { $('#in').disabled = $('#out').disabled = !(pos || qr); }
+    function showQr() {
+      var el = $('#qrst');
+      if (!qr) { el.innerHTML = ''; return; }
+      el.innerHTML = '已掃描 QR:<b>' + esc(locName(qr.loc)) + '</b> <button class="sm" id="qrx">取消</button>';
+      $('#qrx').onclick = function () { qr = null; showQr(); refreshBtns(); };
     }
     $('#loc').onclick = locate;
+    $('#scan').onclick = function () {
+      scanQr(function (q) { qr = q; showQr(); refreshBtns(); toast('已掃描「' + locName(q.loc) + '」,請按上班或下班打卡'); });
+    };
+    showQr(); refreshBtns();
     locate();
 
     async function punch(type, btn) {
       await guard(async function () {
-        var p = await getPosition(); // 打卡當下重新定位
-        var r = await call('punch.do', { type: type, lat: p.coords.latitude, lng: p.coords.longitude });
+        var r;
+        if (qr) {
+          var used = qr; qr = null; showQr(); refreshBtns(); // QR 只用一次
+          var q = await Promise.race([getPosition().catch(function () { return null; }), new Promise(function (res) { setTimeout(function () { res(null); }, 4000); })]);
+          var args = { type: type, qr: used };
+          if (q) { args.lat = q.coords.latitude; args.lng = q.coords.longitude; }
+          r = await call('punch.do', args);
+        } else {
+          var p = await getPosition(); // 打卡當下重新定位
+          r = await call('punch.do', { type: type, lat: p.coords.latitude, lng: p.coords.longitude });
+        }
         records.unshift({ time: r.time, type: type, place: r.place, distance: r.distance, result: '成功' });
         showToday(); toast(type + '打卡成功(' + r.place + ')');
       }, btn);
@@ -477,7 +600,7 @@
         return '<tr><td>' + esc(id) + '</td><td>' + esc(sum[id].name) + '</td><td>' + Object.keys(sum[id].days).length + '</td><td>' + (sum[id].bad ? '<span class="badge bad">' + sum[id].bad + '</span>' : 0) + '</td></tr>';
       }), '本月沒有打卡紀錄') + '</div>' +
       '<div class="card"><h3>打卡明細</h3>' + table(['時間', '員編', '姓名', '類型', '地點', '距離', '結果'], rows.map(function (r) {
-        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.empId) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.type) + '</td><td>' + esc(r.place) + '</td><td>' + esc(r.distance) + ' m</td><td>' + badge(r.result) + '</td></tr>';
+        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.empId) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.type) + '</td><td>' + esc(r.place) + '</td><td>' + (r.distance === '' || r.distance == null ? '—' : esc(r.distance) + ' m') + '</td><td>' + badge(r.result) + '</td></tr>';
       }), '沒有資料') + '</div>';
     $('#mon').onchange = function () { if (this.value) { viewAttendance.month = this.value; viewAttendance(main); } };
   }
@@ -575,7 +698,7 @@
     main.innerHTML = '<div class="row"><h2 style="margin:0">打卡地點(GPS 定點)</h2><div class="spacer"></div><button id="ltpl">下載 Excel 範本</button><button id="limp">Excel 批次匯入</button><button class="primary" id="add">新增地點</button></div><input type="file" id="limpf" accept=".xlsx,.xls,.csv" class="hidden"><div class="card">' +
       table(['名稱', '緯度', '經度', '半徑(公尺)', '啟用', ''], list.map(function (l) {
         return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
-          '</td><td><button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
+          '</td><td>' + (l.active ? '<button class="sm" data-qr="' + esc(l.id) + '">顯示 QR</button> ' : '') + '<button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
       }), '尚未設定地點') + '</div>' +
       '<p class="hint">提示:新增地點時輸入名稱或地址再按「搜尋座標」即可自動取得座標;也可在現場按「使用目前位置」。儲存前請用地圖連結確認位置正確。</p>';
 
@@ -699,6 +822,7 @@
     }
     $('#add').onclick = function () { form(null); };
     document.querySelectorAll('[data-edit]').forEach(function (b) { b.onclick = function () { form(list.filter(function (x) { return x.id === b.dataset.edit; })[0]); }; });
+    document.querySelectorAll('[data-qr]').forEach(function (b) { b.onclick = function () { showLocQr(list.filter(function (x) { return x.id === b.dataset.qr; })[0]); }; });
     document.querySelectorAll('[data-del]').forEach(function (b) {
       b.onclick = function () {
         if (!confirm('確定刪除這個打卡地點?')) return;
@@ -740,6 +864,7 @@
 
   /* ---------- 啟動 ---------- */
   document.title = cfg.COMPANY_NAME || '人事管理系統';
+  captureQr();
   if (API.hasToken()) {
     call('me').then(function (u) { user = u; renderShell(); }).catch(function () { API.logout(); renderLogin(); });
   } else renderLogin();
