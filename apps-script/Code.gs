@@ -464,23 +464,14 @@ function leaveReview_(u, p) {
 
 /* ============ GPS 打卡 ============ */
 
-/* ---- QR 掃碼打卡:動態 token(每 60 秒一組,簽章防偽造,容許前 2 組 ≈ 最長 3 分鐘有效) ---- */
-var QR_WINDOW = 60;
-
-function qrWin_() { return Math.floor(Date.now() / 1000 / QR_WINDOW); }
-
-function qrToken_(locId, win) {
+/* ---- QR 掃碼打卡:靜態 token(每個地點固定一組,簽章防偽造,可列印張貼) ---- */
+function qrToken_(locId) {
   var secret = PropertiesService.getScriptProperties().getProperty(SALT_KEY) || '';
-  var sig = Utilities.computeHmacSha256Signature('qr:' + locId + ':' + win, secret);
-  return sig.slice(0, 6).map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
+  var sig = Utilities.computeHmacSha256Signature('qr:' + locId + ':static', secret);
+  return sig.slice(0, 8).map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
 }
 
-function qrValid_(locId, token) {
-  token = String(token || '');
-  var w = qrWin_();
-  for (var i = 0; i <= 2; i++) if (qrToken_(locId, w - i) === token) return true;
-  return false;
-}
+function qrValid_(locId, token) { return qrToken_(locId) === String(token || ''); }
 
 function findActiveLoc_(id) {
   var found = null;
@@ -490,24 +481,25 @@ function findActiveLoc_(id) {
   return found;
 }
 
-/** 管理員:取得某地點目前的動態 QR token(給櫃台平板或電腦持續顯示用) */
+/** 管理員:取得某地點的固定 QR token(用來產生可列印的 QR) */
 function qrToken(u, p) {
   requireAdmin_(u);
   var loc = findActiveLoc_(p.id);
   if (!loc) throw new Error('找不到啟用中的地點');
-  return { token: qrToken_(loc['地點ID'], qrWin_()), window: QR_WINDOW, name: loc['名稱'] };
+  return { token: qrToken_(loc['地點ID']), name: loc['名稱'] };
 }
 
 function punchByQr_(u, p) {
   var loc = findActiveLoc_(p.qr && p.qr.loc);
   if (!loc) throw new Error('QR 對應的地點不存在或已停用');
-  if (!qrValid_(loc['地點ID'], p.qr.token)) throw new Error('QR 已過期或無效,請重新掃描目前顯示的 QR');
-  // 掃到動態 QR 即證明人在現場;若有定位就一併記錄距離(不擋打卡,避免室內定位不準)
-  var lat = Number(p.lat), lng = Number(p.lng), dist = '';
+  if (!qrValid_(loc['地點ID'], p.qr.token)) throw new Error('QR 無效,請掃描現場張貼的正確 QR');
+  // 靜態 QR 可能被拍照轉傳:有定位時仍檢查距離,超出範圍就拒絕;沒有定位則放行並留空
+  var lat = Number(p.lat), lng = Number(p.lng), dist = '', ok = true;
   var hasPos = p.lat !== undefined && p.lat !== null && p.lat !== '' && isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
-  if (hasPos) dist = Math.round(distance_(lat, lng, Number(loc['緯度']), Number(loc['經度'])));
+  if (hasPos) { dist = Math.round(distance_(lat, lng, Number(loc['緯度']), Number(loc['經度']))); ok = dist <= Number(loc['半徑(公尺)']); }
   var place = loc['名稱'] + '(QR)';
-  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, hasPos ? lat : '', hasPos ? lng : '', dist, place, '成功']);
+  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, hasPos ? lat : '', hasPos ? lng : '', dist, place, ok ? '成功' : '超出範圍']);
+  if (!ok) throw new Error('距離「' + loc['名稱'] + '」' + dist + ' 公尺,超出打卡範圍(' + loc['半徑(公尺)'] + ' 公尺)');
   return { time: now_(), place: place, distance: dist };
 }
 

@@ -348,32 +348,28 @@
     }
   }
 
-  /* 管理員端:顯示會自動更新的動態 QR(放在櫃台平板 / 電腦持續顯示) */
-  function showLocQr(loc) {
-    var timer = 0, left = 0, alive = true;
-    var d = openDialog('<h3>' + esc(loc.name) + ' 打卡 QR</h3><div id="qrbox" style="max-width:360px;margin:0 auto;min-height:200px"></div>' +
-      '<p class="hint" id="qrmsg">產生中…</p><p class="hint">請持續顯示此畫面讓員工掃描。QR 約每 30 秒自動更新,舊的 QR 約 3 分鐘後失效,拍照轉傳無法長期使用。</p>' +
-      '<div class="row" style="margin-top:8px"><button data-close>關閉</button></div>');
-    d.onclose = function () { alive = false; clearInterval(timer); };
+  /* 管理員端:顯示每個地點固定的 QR,可列印張貼 */
+  async function showLocQr(loc) {
+    var d = openDialog('<h3>' + esc(loc.name) + ' 打卡 QR</h3><div id="qrbox" style="max-width:320px;margin:0 auto;min-height:200px"></div>' +
+      '<p class="hint" id="qrmsg">產生中…</p><p class="hint">這是固定的 QR,列印後張貼在打卡地點即可。注意:有人拍照轉傳,別人也能掃;系統在有定位時仍會檢查是否在範圍內。</p>' +
+      '<div class="row" style="margin-top:8px"><button class="primary" id="qrprint" disabled>列印</button><button data-close>關閉</button></div>');
     var c = d.querySelector('[data-close]'); if (c) c.onclick = function () { d.close(); };
-    async function draw() {
-      try {
-        var r = await call('qr.token', { id: loc.id });
-        var gen = await loadLib('vendor/qrcode.js', 'qrcode');
-        if (!alive) return;
-        var url = location.origin + location.pathname + '#/qr?l=' + encodeURIComponent(loc.id) + '&t=' + r.token;
-        var q = gen(0, 'M'); q.addData(url); q.make();
-        $('#qrbox').innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
-        left = 30;
-        $('#qrmsg').textContent = '下次更新:' + left + ' 秒';
-      } catch (e) { if (alive) $('#qrmsg').textContent = (e.code === 'AUTH' ? '登入已逾時,請重新登入後再顯示。' : e.message); }
-    }
-    draw();
-    timer = setInterval(function () {
-      left--;
-      if (left <= 0) { left = 30; draw(); }
-      else { var m = $('#qrmsg'); if (m) m.textContent = '下次更新:' + left + ' 秒'; }
-    }, 1000);
+    try {
+      var r = await call('qr.token', { id: loc.id });
+      var gen = await loadLib('vendor/qrcode.js', 'qrcode');
+      var url = location.origin + location.pathname + '#/qr?l=' + encodeURIComponent(loc.id) + '&t=' + r.token;
+      var q = gen(0, 'M'); q.addData(url); q.make();
+      var svg = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+      $('#qrbox').innerHTML = svg;
+      $('#qrmsg').textContent = '用手機相機掃描即可開啟打卡。';
+      var pb = $('#qrprint'); pb.disabled = false;
+      pb.onclick = function () {
+        var w = window.open('', '_blank');
+        if (!w) { toast('瀏覽器擋住了列印視窗,請允許彈出視窗', true); return; }
+        w.document.write('<!doctype html><meta charset="utf-8"><title>' + esc(loc.name) + ' 打卡 QR</title><body style="font-family:sans-serif;text-align:center;margin:40px"><h1>' + esc(loc.name) + '</h1><div style="width:360px;margin:0 auto">' + svg + '</div><h2>掃描 QR 打卡</h2><p>用手機相機掃描,登入後選擇上班或下班</p></body>');
+        w.document.close(); w.focus(); w.print();
+      };
+    } catch (e) { $('#qrmsg').textContent = e.code === 'AUTH' ? '登入已逾時,請重新登入。' : e.message; }
   }
 
   async function viewPunch(main) {
@@ -392,7 +388,7 @@
       '<div class="geo" id="qrst"></div>' +
       '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button><button id="scan">掃 QR 打卡</button></div>' +
       '<div class="punch-btns"><button class="primary" id="in" disabled>上班打卡</button><button class="ok" id="out" disabled>下班打卡</button></div>' +
-      '<p class="hint">需在設定的打卡地點範圍內才能打卡;或掃描現場顯示的 QR(約每分鐘更新一次,過期請重新掃描)。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
+      '<p class="hint">需在設定的打卡地點範圍內才能打卡;或掃描現場張貼的 QR。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
       '<div class="card"><h3>今日打卡紀錄</h3><div id="today"></div></div>';
 
     function tick() { $('#clk').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }); }
