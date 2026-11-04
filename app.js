@@ -32,7 +32,7 @@
     finally { if (btn) btn.disabled = false; }
   }
   function badge(status) {
-    var cls = { '核准': 'ok', '成功': 'ok', '待簽核': 'warn', '駁回': 'bad', '超出範圍': 'bad', '撤回': '' }[status] || '';
+    var cls = { '核准': 'ok', '成功': 'ok', '已錄取': 'ok', '已報名': 'warn', '待簽核': 'warn', '駁回': 'bad', '超出範圍': 'bad', '撤回': '' }[status] || '';
     return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
   }
   function table(head, rows, empty) {
@@ -255,6 +255,7 @@
     { path: 'punch', label: '打卡', roles: ['employee', 'manager', 'admin'], view: viewPunch },
     { path: 'leave', label: '請假', roles: ['employee', 'manager', 'admin'], view: viewLeave },
     { path: 'schedule', label: '排班', roles: ['employee', 'manager', 'admin'], view: viewSchedule },
+    { path: 'signup', label: '排班報名', roles: ['employee', 'manager', 'admin'], view: viewSignup },
     { path: 'approvals', label: '假單簽核', roles: ['manager', 'admin'], group: '主管', view: viewApprovals },
     { path: 'attendance', label: '出勤報表', roles: ['manager', 'admin'], group: '主管', view: viewAttendance },
     { path: 'employees', label: '員工資料', roles: ['admin'], group: '管理', view: viewEmployees },
@@ -566,6 +567,110 @@
         }, this);
       };
     }
+  }
+
+  /* ---------- 排班報名 ---------- */
+  async function viewSignup(main) {
+    var month = (viewSignup.month = viewSignup.month || curMonth());
+    var mgr = user.role !== 'employee';
+    var WD = ['日', '一', '二', '三', '四', '五', '六'];
+    function dlabel(d) { return esc(d.slice(5).replace('-', '/')) + '(' + WD[new Date(d).getDay()] + ')'; }
+    function tlabel(s) { return esc(s.shift) + (s.start ? '(' + esc(s.start) + '–' + esc(s.end) + ')' : ''); }
+    var bar = '<div class="row"><h2 style="margin:0">排班報名</h2><div class="spacer"></div><button class="sm" id="pm">◀</button><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><button class="sm" id="nm">▶</button></div>';
+    function go(m) { viewSignup.month = m; viewSignup(main).catch(function (e) { toast(e.message, true); }); }
+    function bindBar() {
+      $('#mon').onchange = function () { if (this.value) go(this.value); };
+      $('#pm').onclick = function () { var p = month.split('-'); go(fmtDate(new Date(+p[0], +p[1] - 2, 1)).slice(0, 7)); };
+      $('#nm').onclick = function () { var p = month.split('-'); go(fmtDate(new Date(+p[0], +p[1], 1)).slice(0, 7)); };
+    }
+
+    if (!mgr) {
+      var slots = await call('signup.open', { month: month });
+      var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;報名後等主管錄取,錄取後會出現在「排班」。' : '您尚未設定所屬單位,請聯絡人資。';
+      main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '已報名 / 名額', '狀態', ''], slots.map(function (s, i) {
+        var full = s.count >= s.quota;
+        var st = s.mine === '已錄取' ? badge('已錄取') : s.mine ? badge('已報名') : full ? '<span class="badge bad">額滿</span>' : '';
+        var btn = s.mine === '已報名' ? '<button class="sm danger" data-c="' + i + '">取消報名</button>' : (!s.mine && !full ? '<button class="sm primary" data-a="' + i + '">報名</button>' : '');
+        return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + ' / ' + s.quota + '</td><td>' + st + '</td><td>' + btn + '</td></tr>';
+      }), '這個月目前沒有開放報名的班') + '</div>';
+      bindBar();
+      function act(sel, action, msg) {
+        document.querySelectorAll(sel).forEach(function (b) {
+          b.onclick = function () {
+            var s = slots[+(b.dataset.a || b.dataset.c)];
+            guard(async function () {
+              await call(action, { date: s.date, unit: s.unit, shift: s.shift });
+              toast(msg); viewSignup(main);
+            }, b);
+          };
+        });
+      }
+      act('[data-a]', 'signup.apply', '報名成功');
+      act('[data-c]', 'signup.cancel', '已取消報名');
+      return;
+    }
+
+    var res = await Promise.all([call('signup.open', { month: month }), call('signup.list', { month: month }), call('shifts.types'), call('employees.list')]);
+    var qslots = res[0], list = res[1], types = res[2].filter(function (t) { return t.start; }), emps = res[3];
+    var units = [];
+    emps.forEach(function (e) { if (e.dept && units.indexOf(e.dept) < 0) units.push(e.dept); });
+    qslots.forEach(function (s) { if (units.indexOf(s.unit) < 0) units.push(s.unit); });
+    var dirty = {};
+
+    var quotaCard = '<div class="card"><h3>名額設定</h3>' + table(['日期', '班別', '單位', '已報名', '需求人數'], qslots.map(function (s, i) {
+      return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + '</td><td><input type="number" min="0" max="500" value="' + s.quota + '" data-q="' + i + '" style="width:80px"></td></tr>';
+    }), '這個月還沒有設定名額') + '<div class="row" style="margin-top:8px"><div class="spacer"></div><button class="primary" id="qsv" disabled>儲存名額(填 0 = 移除)</button></div>' +
+      '<h3 style="margin-top:16px">新增名額</h3><div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-end">' +
+      '<div><label for="n_d">日期</label><input id="n_d" type="date" value="' + esc(month) + '-01"></div>' +
+      '<div><label for="n_u">單位</label><input id="n_u" list="n_ul" value="' + esc(units[0] || '') + '"><datalist id="n_ul">' + units.map(function (u) { return '<option value="' + esc(u) + '">'; }).join('') + '</datalist></div>' +
+      '<div><label for="n_s">班別</label><select id="n_s">' + types.map(function (t) { return '<option value="' + esc(t.name) + '">' + esc(t.name) + '(' + esc(t.start) + '–' + esc(t.end) + ')</option>'; }).join('') + '</select></div>' +
+      '<div><label for="n_q">需求人數</label><input id="n_q" type="number" min="1" max="500" value="5" style="width:90px"></div>' +
+      '<button class="primary" id="nadd">新增</button></div></div>';
+
+    var pendingN = list.filter(function (r) { return r.status === '已報名'; }).length;
+    var listCard = '<div class="card"><div class="row"><h3 style="margin:0">報名名單(待錄取 ' + pendingN + ')</h3><div class="spacer"></div><button class="primary" id="cf" disabled>錄取勾選者</button></div>' +
+      table(['', '日期', '班別', '單位', '員工', '狀態', '報名時間'], list.map(function (r, i) {
+        return '<tr><td>' + (r.status === '已報名' ? '<input type="checkbox" data-r="' + i + '">' : '') + '</td><td>' + dlabel(r.date) + '</td><td>' + esc(r.shift) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.name) + '(' + esc(r.empId) + ')</td><td>' + badge(r.status) + '</td><td>' + esc(r.time) + '</td></tr>';
+      }), '這個月還沒有人報名') + '</div>';
+    main.innerHTML = bar + quotaCard + listCard;
+    bindBar();
+
+    document.querySelectorAll('[data-q]').forEach(function (inp) {
+      inp.oninput = function () {
+        var s = qslots[+inp.dataset.q], k = s.date + '|' + s.unit + '|' + s.shift;
+        if (Number(inp.value) === s.quota) delete dirty[k]; else dirty[k] = { date: s.date, unit: s.unit, shift: s.shift, quota: Number(inp.value) || 0 };
+        $('#qsv').disabled = !Object.keys(dirty).length;
+      };
+    });
+    $('#qsv').onclick = function () {
+      guard(async function () {
+        var items = Object.keys(dirty).map(function (k) { return dirty[k]; });
+        await call('signup.quota.save', { items: items });
+        toast('已儲存名額'); viewSignup(main);
+      }, this);
+    };
+    $('#nadd').onclick = function () {
+      guard(async function () {
+        if (!val('n_d') || !val('n_u').trim() || !val('n_s')) throw new Error('請填日期、單位與班別');
+        await call('signup.quota.save', { items: [{ date: val('n_d'), unit: val('n_u').trim(), shift: val('n_s'), quota: Number(val('n_q')) }] });
+        toast('已新增名額');
+        var m = val('n_d').slice(0, 7); if (m !== month) viewSignup.month = m;
+        viewSignup(main);
+      }, this);
+    };
+    document.querySelectorAll('[data-r]').forEach(function (c) {
+      c.onchange = function () { $('#cf').disabled = !document.querySelector('[data-r]:checked'); };
+    });
+    $('#cf').onclick = function () {
+      guard(async function () {
+        var items = [];
+        document.querySelectorAll('[data-r]:checked').forEach(function (c) {
+          var r = list[+c.dataset.r]; items.push({ date: r.date, empId: r.empId, unit: r.unit, shift: r.shift });
+        });
+        await call('signup.confirm', { items: items });
+        toast('已錄取 ' + items.length + ' 人,並寫入排班'); viewSignup(main);
+      }, this);
+    };
   }
 
   /* ---------- 假單簽核 ---------- */

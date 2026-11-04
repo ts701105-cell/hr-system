@@ -61,6 +61,13 @@
   }
   function scope(db, u) { return db.emps.filter(function (e) { return u.role === 'admin' || e.manager === u.id; }).map(function (e) { return e.id; }); }
   function needMgr(u) { if (u.role === 'employee') throw new Error('需要主管權限'); }
+  /* 示範用名額:第一次使用時替「門市部」開未來 5 天的早班,各 2 個名額 */
+  function sg(db) {
+    if (db.slots) return;
+    db.slots = []; db.signups = [];
+    var d = new Date();
+    for (var i = 1; i <= 5; i++) { d.setDate(d.getDate() + 1); db.slots.push({ date: fmtDate(d), unit: '門市部', shift: '早班', quota: 2 }); }
+  }
   function demoQr(id) { var s = 'qr:' + id + ':static', h = 5381; for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(16); }
   function needAdmin(u) { if (u.role !== 'admin') throw new Error('需要管理員權限'); }
   function balance(db, u) {
@@ -232,6 +239,75 @@
       return { applied: true, errors: [], created: created, updated: updated };
     },
     'locations.delete': function (db, u, p) { needAdmin(u); db.locs = db.locs.filter(function (l) { return l.id !== p.id; }); return true; },
+    'signup.open': function (db, u, p) {
+      sg(db);
+      var mgr = u.role !== 'employee', unit = mgr ? String(p.unit || '') : String(u.dept || '');
+      if (!mgr && !unit) return [];
+      return db.slots.filter(function (s) {
+        return (!p.month || s.date.slice(0, 7) === p.month) && (!unit || s.unit === unit) && (mgr || s.date >= today());
+      }).map(function (s) {
+        var ty = db.shiftTypes.filter(function (t) { return t.name === s.shift; })[0] || {};
+        var same = db.signups.filter(function (r) { return r.date === s.date && r.unit === s.unit && r.shift === s.shift; });
+        var mine = same.filter(function (r) { return r.empId === u.id; })[0];
+        return { date: s.date, unit: s.unit, shift: s.shift, start: ty.start || '', end: ty.end || '', quota: s.quota, count: same.length, mine: mine ? mine.status : '' };
+      }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    },
+    'signup.apply': function (db, u, p) {
+      sg(db);
+      if (p.date < today()) throw new Error('已過報名日期');
+      if (!p.unit || u.dept !== p.unit) throw new Error('只能報名自己所屬單位的班');
+      var s = db.slots.filter(function (x) { return x.date === p.date && x.unit === p.unit && x.shift === p.shift; })[0];
+      if (!s) throw new Error('此日期未開放報名');
+      if (db.signups.some(function (r) { return r.empId === u.id && r.date === p.date; })) throw new Error('這一天已經報名過了');
+      if (db.signups.filter(function (r) { return r.date === p.date && r.unit === p.unit && r.shift === p.shift; }).length >= s.quota) throw new Error('名額已滿');
+      db.signups.push({ date: p.date, empId: u.id, name: u.name, unit: p.unit, shift: p.shift, status: '已報名', time: nowStr() });
+      return true;
+    },
+    'signup.cancel': function (db, u, p) {
+      sg(db);
+      var r = db.signups.filter(function (x) { return x.date === p.date && x.empId === u.id && x.unit === p.unit && x.shift === p.shift; })[0];
+      if (!r) throw new Error('找不到報名紀錄');
+      if (r.status === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
+      db.signups.splice(db.signups.indexOf(r), 1);
+      return true;
+    },
+    'signup.list': function (db, u, p) {
+      needMgr(u); sg(db);
+      var sc = scope(db, u);
+      return db.signups.filter(function (r) { return (!p.month || r.date.slice(0, 7) === p.month) && (!p.unit || r.unit === p.unit) && (u.role === 'admin' || sc.indexOf(r.empId) >= 0); })
+        .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    },
+    'signup.confirm': function (db, u, p) {
+      needMgr(u); sg(db);
+      var sc = scope(db, u), its = p.items || [];
+      its.forEach(function (it) {
+        if (sc.indexOf(it.empId) < 0) throw new Error('無權限排班: ' + it.empId);
+        if (!db.signups.some(function (r) { return r.date === it.date && r.empId === it.empId && r.unit === it.unit && r.shift === it.shift; })) throw new Error('找不到報名: ' + it.empId + ' ' + it.date);
+      });
+      its.forEach(function (it) {
+        var r = db.signups.filter(function (x) { return x.date === it.date && x.empId === it.empId && x.unit === it.unit && x.shift === it.shift; })[0];
+        r.status = '已錄取';
+        db.shifts = db.shifts.filter(function (s) { return !(s.date === it.date && s.empId === it.empId); });
+        var t = db.shiftTypes.filter(function (x) { return x.name === it.shift; })[0];
+        if (!t) throw new Error('無此班別: ' + it.shift);
+        db.shifts.push({ date: it.date, empId: it.empId, name: r.name, shift: t.name, start: t.start, end: t.end });
+      });
+      return its.length;
+    },
+    'signup.quota.save': function (db, u, p) {
+      needMgr(u); sg(db);
+      (p.items || []).forEach(function (it) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(it.date)) throw new Error('日期格式錯誤');
+        if (!String(it.unit || '').trim()) throw new Error('請填單位');
+        if (!db.shiftTypes.some(function (t) { return t.name === it.shift; })) throw new Error('無此班別: ' + it.shift);
+        var q = Math.floor(Number(it.quota) || 0);
+        if (q < 0 || q > 500) throw new Error('需求人數不合理');
+        var s = db.slots.filter(function (x) { return x.date === it.date && x.unit === it.unit && x.shift === it.shift; })[0];
+        if (!q) { if (s) db.slots.splice(db.slots.indexOf(s), 1); return; }
+        if (s) s.quota = q; else db.slots.push({ date: it.date, unit: String(it.unit).trim(), shift: it.shift, quota: q });
+      });
+      return (p.items || []).length;
+    },
     'shifts.types': function (db) { return db.shiftTypes; },
     'shifts.list': function (db, u, p) {
       var m = p.month || today().slice(0, 7), sc = u.role === 'employee' ? [u.id] : scope(db, u).concat([u.id]);

@@ -12,7 +12,9 @@ var SHEETS = {
   LOC: '地點',
   SHIFT: '排班',
   SHIFT_TYPE: '班別',
-  LOGIN: '登入紀錄'
+  LOGIN: '登入紀錄',
+  SLOT: '名額',
+  SIGNUP: '報名'
 };
 
 var HEADERS = {
@@ -23,7 +25,9 @@ var HEADERS = {
   '地點': ['地點ID', '名稱', '緯度', '經度', '半徑(公尺)', '啟用'],
   '排班': ['日期', '員編', '姓名', '班別', '上班', '下班'],
   '班別': ['班別', '上班', '下班', '單位'],
-  '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置']
+  '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置'],
+  '名額': ['日期', '單位', '班別', '需求人數'],
+  '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間']
 };
 
 var TOKEN_TTL = 6 * 60 * 60; // 秒
@@ -62,6 +66,8 @@ function setup() {
   // 避免時間/日期被試算表自動轉型
   ss.getSheetByName(SHEETS.SHIFT_TYPE).getRange('B:C').setNumberFormat('@');
   ss.getSheetByName(SHEETS.SHIFT).getRange('A:A').setNumberFormat('@');
+  ss.getSheetByName(SHEETS.SLOT).getRange('A:A').setNumberFormat('@');
+  ss.getSheetByName(SHEETS.SIGNUP).getRange('A:A').setNumberFormat('@');
   ss.getSheetByName(SHEETS.SHIFT).getRange('E:F').setNumberFormat('@');
   ss.getSheetByName(SHEETS.EMP).getRange('G:G').setNumberFormat('@');
   ss.getSheetByName(SHEETS.LEAVE).getRange('E:F').setNumberFormat('@');
@@ -125,6 +131,12 @@ var ROUTES = {
   'shifts.types': shiftTypes_,
   'shifts.list': shiftsList_,
   'shifts.save': shiftsSave_,
+  'signup.open': signupOpen_,
+  'signup.apply': signupApply_,
+  'signup.cancel': signupCancel_,
+  'signup.list': signupList_,
+  'signup.confirm': signupConfirm_,
+  'signup.quota.save': signupQuotaSave_,
   'qr.token': qrToken,
   'login.log': loginLog_,
   'login.my': loginMy_
@@ -686,16 +698,165 @@ function shiftsSave_(u, p) {
   return items.length;
 }
 
+/* ============ 排班報名 ============ */
+/* 名額:每個「日期 + 單位 + 班別」一列,需求人數 = 可報名人數。
+ * 報名:員工只能報名自己「部門」(= 派駐單位)的名額;主管錄取後寫入「排班」,狀態改為已錄取。 */
+
+function validDate_(d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); }
+/** 試算表若把日期欄轉成日期格式,直接讀到的是 Date 物件;統一轉回 yyyy-MM-dd 字串再比對 */
+function dstr_(v) { return v instanceof Date ? Utilities.formatDate(v, 'Asia/Taipei', 'yyyy-MM-dd') : String(v); }
+
+/** 員工:自己單位、今天(含)以後的名額;主管/管理員:全部單位,可用 p.month / p.unit 篩選 */
+function signupOpen_(u, p) {
+  var month = String(p.month || '');
+  var mgr = isManager_(u);
+  var unit = mgr ? String(p.unit || '') : String(u['部門'] || '');
+  if (!mgr && !unit) return [];
+  var t = today_();
+  var cnt = {}, mine = {};
+  readObjs_(SHEETS.SIGNUP).forEach(function (r) {
+    var k = r['日期'] + '|' + r['單位'] + '|' + r['班別'];
+    cnt[k] = (cnt[k] || 0) + 1;
+    if (String(r['員編']) === String(u['員編'])) mine[k] = r['狀態'];
+  });
+  var types = {};
+  shiftTypes_().forEach(function (s) { types[s.name] = s; });
+  return readObjs_(SHEETS.SLOT)
+    .filter(function (s) {
+      var d = String(s['日期']);
+      if (!validDate_(d)) return false;
+      if (month && d.slice(0, 7) !== month) return false;
+      if (unit && s['單位'] !== unit) return false;
+      return mgr || d >= t;
+    })
+    .map(function (s) {
+      var k = s['日期'] + '|' + s['單位'] + '|' + s['班別'], ty = types[s['班別']] || {};
+      return { date: s['日期'], unit: s['單位'], shift: s['班別'], start: ty.start || '', end: ty.end || '',
+        quota: Number(s['需求人數']) || 0, count: cnt[k] || 0, mine: mine[k] || '' };
+    })
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.unit + a.shift < b.unit + b.shift ? -1 : 1); });
+}
+
+function findSlot_(date, unit, shift) {
+  var list = readObjs_(SHEETS.SLOT);
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i]['日期']) === date && list[i]['單位'] === unit && list[i]['班別'] === shift) return list[i];
+  }
+  return null;
+}
+
+/** p = {date, unit, shift} */
+function signupApply_(u, p) {
+  var date = String(p.date || ''), unit = String(p.unit || ''), shift = String(p.shift || '');
+  if (!validDate_(date)) throw new Error('日期格式錯誤');
+  if (date < today_()) throw new Error('已過報名日期');
+  if (!unit || String(u['部門'] || '') !== unit) throw new Error('只能報名自己所屬單位的班');
+  var slot = findSlot_(date, unit, shift);
+  if (!slot) throw new Error('此日期未開放報名');
+  var rows = readObjs_(SHEETS.SIGNUP), count = 0;
+  rows.forEach(function (r) {
+    if (String(r['員編']) === String(u['員編']) && String(r['日期']) === date) throw new Error('這一天已經報名過了');
+    if (String(r['日期']) === date && r['單位'] === unit && r['班別'] === shift) count++;
+  });
+  if (count >= (Number(slot['需求人數']) || 0)) throw new Error('名額已滿');
+  sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已報名', now_()]);
+  return true;
+}
+
+/** 員工取消自己尚未錄取的報名。p = {date, unit, shift} */
+function signupCancel_(u, p) {
+  var sh = sheet_(SHEETS.SIGNUP);
+  var n = sh.getLastRow();
+  if (n < 2) throw new Error('找不到報名紀錄');
+  var vals = sh.getRange(2, 1, n - 1, 7).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var r = vals[i];
+    if (dstr_(r[0]) === String(p.date) && String(r[1]) === String(u['員編']) && r[3] === p.unit && r[4] === p.shift) {
+      if (r[5] === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
+      sh.deleteRow(i + 2);
+      return true;
+    }
+  }
+  throw new Error('找不到報名紀錄');
+}
+
+/** 主管/管理員:報名名單(管理員看全部,主管只看直屬部屬)。p = {month, unit} */
+function signupList_(u, p) {
+  requireManager_(u);
+  var month = String(p.month || ''), unit = String(p.unit || '');
+  var scope = isAdmin_(u) ? null : scopeIds_(u);
+  return readObjs_(SHEETS.SIGNUP)
+    .filter(function (r) {
+      if (month && String(r['日期']).slice(0, 7) !== month) return false;
+      if (unit && r['單位'] !== unit) return false;
+      return !scope || scope[r['員編']];
+    })
+    .map(function (r) { return { date: r['日期'], empId: r['員編'], name: r['姓名'], unit: r['單位'], shift: r['班別'], status: r['狀態'], time: r['報名時間'] }; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.unit + a.shift < b.unit + b.shift ? -1 : 1); });
+}
+
+/** 錄取:寫入排班並把報名標為已錄取。p.items = [{date, empId, unit, shift}] */
+function signupConfirm_(u, p) {
+  requireManager_(u);
+  var items = p.items || [];
+  if (!items.length) return 0;
+  if (items.length > 300) throw new Error('單次最多 300 筆');
+  var sh = sheet_(SHEETS.SIGNUP);
+  var n = sh.getLastRow();
+  var vals = n > 1 ? sh.getRange(2, 1, n - 1, 7).getValues() : [];
+  var pos = {};
+  vals.forEach(function (r, i) { pos[dstr_(r[0]) + '|' + r[1] + '|' + r[3] + '|' + r[4]] = i; });
+  var shifts = items.map(function (it) {
+    if (!(it.date + '|' + it.empId + '|' + it.unit + '|' + it.shift in pos)) throw new Error('找不到報名: ' + it.empId + ' ' + it.date);
+    return { date: it.date, empId: it.empId, shift: it.shift };
+  });
+  shiftsSave_(u, { items: shifts }); // 先寫排班(含權限與班別檢查),成功才改狀態
+  items.forEach(function (it) { sh.getRange(pos[it.date + '|' + it.empId + '|' + it.unit + '|' + it.shift] + 2, 6).setValue('已錄取'); });
+  return items.length;
+}
+
+/** 設定名額。p.items = [{date, unit, shift, quota}],quota 為 0 或空白代表移除該名額 */
+function signupQuotaSave_(u, p) {
+  requireManager_(u);
+  var items = p.items || [];
+  if (!items.length) return 0;
+  if (items.length > 300) throw new Error('單次最多 300 筆');
+  var types = {};
+  shiftTypes_().forEach(function (t) { types[t.name] = true; });
+  var sh = sheet_(SHEETS.SLOT);
+  var n = sh.getLastRow();
+  var values = n > 1 ? sh.getRange(2, 1, n - 1, 4).getValues() : [];
+  var index = {};
+  values.forEach(function (r, i) { r[0] = dstr_(r[0]); index[r[0] + '|' + r[1] + '|' + r[2]] = i; });
+  var removed = {};
+  items.forEach(function (it) {
+    var date = String(it.date || ''), unit = String(it.unit || '').trim(), shift = String(it.shift || '');
+    if (!validDate_(date)) throw new Error('日期格式錯誤');
+    if (!unit) throw new Error('請填單位');
+    if (!types[shift]) throw new Error('無此班別: ' + shift);
+    var q = Math.floor(Number(it.quota) || 0);
+    if (q < 0 || q > 500) throw new Error('需求人數不合理');
+    var key = date + '|' + unit + '|' + shift;
+    if (!q) { if (key in index) removed[index[key]] = true; return; }
+    if (key in index) values[index[key]][3] = q; else { index[key] = values.length; values.push([date, unit, shift, q]); }
+  });
+  var out = values.filter(function (_, i) { return !removed[i]; });
+  if (n > 1) sh.getRange(2, 1, n - 1, 4).clearContent();
+  if (out.length) sh.getRange(2, 1, out.length, 4).setNumberFormat('@').setValues(out);
+  return items.length;
+}
+
 /* ============ 共用工具 ============ */
 
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && name === SHEETS.LOGIN) { // 登入紀錄表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
     sh.getRange('A:B').setNumberFormat('@');
+    if (name === SHEETS.SLOT || name === SHEETS.SIGNUP) sh.getRange('A:A').setNumberFormat('@'); // 日期維持文字,避免被轉成日期格式
   }
   if (!sh) throw new Error('缺少工作表「' + name + '」,請先執行 setup()');
   return sh;
