@@ -239,6 +239,7 @@
       return { applied: true, errors: [], created: created, updated: updated };
     },
     'locations.delete': function (db, u, p) { needAdmin(u); db.locs = db.locs.filter(function (l) { return l.id !== p.id; }); return true; },
+    'sync.drive': function () { throw new Error('示範模式無法讀取雲端硬碟,請連線 Apps Script 後使用'); },
     'signup.open': function (db, u, p) {
       sg(db);
       var mgr = u.role !== 'employee', unit = mgr ? String(p.unit || '') : String(u.dept || '');

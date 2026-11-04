@@ -618,7 +618,9 @@
     qslots.forEach(function (s) { if (units.indexOf(s.unit) < 0) units.push(s.unit); });
     var dirty = {};
 
-    var quotaCard = '<div class="card"><h3>名額設定</h3>' + table(['日期', '班別', '單位', '已報名', '需求人數'], qslots.map(function (s, i) {
+    var syncBar = user.role === 'admin' ? '<div class="row" style="gap:8px;margin-bottom:8px"><button id="sync">從雲端硬碟同步 ' + esc(month) + ' 班表</button>' +
+      '<span class="hint">讀取寶雅、鷹世服班表,更新「排班」與「名額」(單向,不會改動雲端硬碟檔案)</span></div>' : '';
+    var quotaCard = '<div class="card"><h3>名額設定</h3>' + syncBar + table(['日期', '班別', '單位', '已報名', '需求人數'], qslots.map(function (s, i) {
       return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + '</td><td><input type="number" min="0" max="500" value="' + s.quota + '" data-q="' + i + '" style="width:80px"></td></tr>';
     }), '這個月還沒有設定名額') + '<div class="row" style="margin-top:8px"><div class="spacer"></div><button class="primary" id="qsv" disabled>儲存名額(填 0 = 移除)</button></div>' +
       '<h3 style="margin-top:16px">新增名額</h3><div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-end">' +
@@ -636,6 +638,21 @@
     main.innerHTML = bar + quotaCard + listCard;
     bindBar();
 
+    if ($('#sync')) $('#sync').onclick = function () {
+      guard(async function () {
+        var lines = [], bad = false;
+        for (var unit of ['寶雅', '鷹世服']) {
+          toast('正在同步 ' + unit + '…(約需十幾秒)');
+          try {
+            var r = await call('sync.drive', { month: month, unit: unit });
+            lines.push('<li><b>' + esc(unit) + '</b>:' + (r.note ? esc(r.note) : '排班 ' + r.shifts + ' 筆、名額 ' + r.slots + ' 筆(分頁 ' + esc(r.sheet) + ')') +
+              (r.unmatched && r.unmatched.length ? '<br><span style="color:#b45309">找不到對應員工、未寫入:' + esc(r.unmatched.join('、')) + '</span>' : '') + '</li>');
+          } catch (e) { bad = true; lines.push('<li><b>' + esc(unit) + '</b>:<span style="color:#b91c1c">' + esc(e.message) + '</span></li>'); }
+        }
+        openDialog('<h3>雲端硬碟同步結果</h3><ul>' + lines.join('') + '</ul><p class="hint">「找不到對應員工」請先把人加進員工資料(姓名要和班表一致)再同步一次。</p><div class="row"><div class="spacer"></div><button data-close>關閉</button></div>');
+        if (!bad) viewSignup(main);
+      }, this);
+    };
     document.querySelectorAll('[data-q]').forEach(function (inp) {
       inp.oninput = function () {
         var s = qslots[+inp.dataset.q], k = s.date + '|' + s.unit + '|' + s.shift;

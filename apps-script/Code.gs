@@ -137,6 +137,7 @@ var ROUTES = {
   'signup.list': signupList_,
   'signup.confirm': signupConfirm_,
   'signup.quota.save': signupQuotaSave_,
+  'sync.drive': syncDriveRoute_,
   'qr.token': qrToken,
   'login.log': loginLog_,
   'login.my': loginMy_
@@ -856,6 +857,117 @@ function signupQuotaSave_(u, p) {
   if (n > 1) sh.getRange(2, 1, n - 1, 4).clearContent();
   if (out.length) sh.getRange(2, 1, out.length, 4).setNumberFormat('@').setValues(out);
   return items.length;
+}
+
+/* ============ 從 Google 雲端硬碟班表同步 ============ */
+/* 讀取雲端硬碟資料夾裡的「寶雅班表.xlsx」「鷹世服班表.xlsx」(班表是 Excel),把指定月份的
+ * 已排班別與「需求/預計支援人數」寫進「排班」「名額」。單向:Drive → 系統,不會改動 Drive 檔案。
+ * 需求:Apps Script 啟用進階服務 Drive(appsscript.json 已宣告)、部署者對該資料夾有讀取權限。
+ * 另可在 Apps Script 手動建立時間驅動觸發程序,每天執行 syncDriveDaily() 自動同步本月。 */
+
+var DRIVE_FOLDER_ID = '1UDKmu8_Ns_4PlZu6Q771iX55PMZP0HaR';
+
+var SYNC_UNITS = {
+  '寶雅': { file: '寶雅班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '寶雅夜班' : '寶雅早班'; } },
+  '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function (label) { return /^早\s*8:/.test(label) ? '鷹世服早班(8-17)' : '鷹世服早班'; } }
+};
+
+function syncDriveRoute_(u, p) {
+  requireAdmin_(u);
+  var month = /^\d{4}-\d{2}$/.test(String(p.month || '')) ? p.month : today_().slice(0, 7);
+  var unit = String(p.unit || '');
+  if (!SYNC_UNITS[unit]) throw new Error('未知的單位: ' + unit);
+  return syncDriveUnit_(unit, month);
+}
+
+/** 給時間驅動觸發程序用:同步本月兩個單位 */
+function syncDriveDaily() {
+  var month = today_().slice(0, 7);
+  Object.keys(SYNC_UNITS).forEach(function (unit) {
+    try { Logger.log(JSON.stringify(syncDriveUnit_(unit, month))); } catch (e) { Logger.log(unit + ' 同步失敗: ' + e.message); }
+  });
+}
+
+function syncDriveUnit_(unit, month) {
+  var cfg = SYNC_UNITS[unit];
+  var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
+  if (!it.hasNext()) throw new Error('資料夾裡找不到「' + cfg.file + '」');
+  var src = it.next();
+  var tmp = Drive.Files.copy({ title: 'tmp-sync-' + unit + '-' + Date.now(), mimeType: 'application/vnd.google-apps.spreadsheet' }, src.getId(), { convert: true });
+  var parsed;
+  try {
+    var ss = SpreadsheetApp.openById(tmp.id);
+    var want = month.replace('-', '');
+    var sh = ss.getSheets().filter(function (s) { return /^班表/.test(s.getName()) && s.getName().replace(/\D/g, '') === want; })[0];
+    if (!sh) return { unit: unit, month: month, sheet: '', shifts: 0, slots: 0, unmatched: [], note: '班表檔裡沒有 ' + month + ' 的分頁' };
+    var lastRow = sh.getLastRow(), lastCol = Math.min(sh.getLastColumn(), 9);
+    parsed = parseScheduleRows_(sh.getRange(1, 1, lastRow, lastCol).getValues(), ss.getSpreadsheetTimeZone(), cfg.shiftOf);
+    parsed.sheetName = sh.getName();
+  } finally {
+    try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e) { /* 暫存檔清不掉也不影響結果,可手動刪除 */ }
+  }
+
+  // 寫入前先確認用到的班別都已在「班別」工作表建立,避免寫到一半才報錯
+  var have = {}, need = {};
+  shiftTypes_().forEach(function (t) { have[t.name] = true; });
+  parsed.shifts.concat(parsed.slots).forEach(function (x) { if (!have[x.shift]) need[x.shift] = true; });
+  if (Object.keys(need).length) throw new Error('「班別」工作表缺少班別: ' + Object.keys(need).join('、') + '(請先貼入匯入檔的「班別」分頁)');
+
+  // 姓名 → 員編:先找同單位,再找其他單位(同時支援兩個單位的人);同名多人無法對應就列入 unmatched
+  var emps = readObjs_(SHEETS.EMP).filter(function (e) { return e['狀態'] === '在職'; });
+  function findId(name) {
+    var a = emps.filter(function (e) { return String(e['姓名']).trim() === name && e['部門'] === unit; });
+    if (!a.length) a = emps.filter(function (e) { return String(e['姓名']).trim() === name; });
+    return a.length === 1 ? String(a[0]['員編']) : '';
+  }
+  var items = [], unmatched = {}, seen = {};
+  parsed.shifts.forEach(function (s) {
+    var id = findId(s.name);
+    if (!id) { unmatched[s.name] = true; return; }
+    var k = s.date + '|' + id;
+    if (seen[k]) return; seen[k] = true;
+    items.push({ date: s.date, empId: id, shift: s.shift });
+  });
+  var admin = { '角色': 'admin', '員編': 'SYSTEM' };
+  for (var i = 0; i < items.length; i += 400) shiftsSave_(admin, { items: items.slice(i, i + 400) });
+  for (var j = 0; j < parsed.slots.length; j += 250) signupQuotaSave_(admin, { items: parsed.slots.slice(j, j + 250).map(function (q) { return { date: q.date, unit: unit, shift: q.shift, quota: q.quota }; }) });
+  return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched) };
+}
+
+/** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列 */
+function parseScheduleRows_(rows, tz, shiftOf) {
+  var shifts = [], demand = {}, dates = null;
+  function ds(v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+    var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? m[0] : '';
+  }
+  rows.forEach(function (r) {
+    var label = String(r[0] == null ? '' : r[0]).trim();
+    if (!label) return;
+    if (label === '日期') { dates = r.slice(1).map(ds); return; }
+    if (!dates || label === '星期') return;
+    var m = label.match(/^(早|中|晚|夜)\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}$/);
+    if (m) {
+      for (var c = 1; c < r.length; c++) {
+        var d = dates[c - 1], cell = r[c];
+        if (!d || cell === '' || cell == null) continue;
+        var name = String(cell).trim().replace(/[\(（][^\)）]*[\)）]?$/, '').replace(/\d+$/, '').trim();
+        if (!name || /^[0-9.\-X×]+$/.test(name)) continue;
+        shifts.push({ date: d, name: name, shift: shiftOf(label) });
+      }
+      return;
+    }
+    var dm = label.match(/^(早|中|晚|夜)班(需求|預計)支援人數/);
+    if (dm) {
+      var kind = dm[1] === '晚' ? '夜' : dm[1];
+      for (var c2 = 1; c2 < r.length; c2++) {
+        var d2 = dates[c2 - 1], n = Number(r[c2]);
+        if (d2 && n > 0) demand[d2 + '|' + kind] = { date: d2, kind: kind, quota: Math.floor(n), shift: shiftOf(kind === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') };
+      }
+    }
+  });
+  return { shifts: shifts, slots: Object.keys(demand).map(function (k) { return demand[k]; }) };
 }
 
 /* ============ 共用工具 ============ */
