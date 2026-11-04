@@ -110,7 +110,7 @@
         if (!role) err.push('角色必須是 員工/主管/管理員');
         if (status !== '在職' && status !== '離職') err.push('狀態必須是 在職 或 離職');
         if (hire && !(/^\d{4}-\d{2}-\d{2}$/.test(hire) && !isNaN(new Date(hire + 'T00:00:00Z').getTime()) && new Date(hire + 'T00:00:00Z').toISOString().slice(0, 10) === hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
-        if (pwd && pwd.length < 8) err.push('初始密碼至少 8 碼');
+        if (pwd && pwd.length < 6) err.push('初始密碼至少 6 碼');
         if (id && id === u.id && (role !== 'admin' || status !== '在職')) err.push('不能降級或停用自己');
         if (id) seen[id] = line;
         if (err.length) errors.push({ line: line, id: id, message: err.join(';') });
@@ -335,11 +335,17 @@
       db.loginLog = db.loginLog || [];
       var ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(params.ip || '') || (/^[0-9a-fA-F:]{2,45}$/.test(params.ip || '') && String(params.ip).indexOf(':') >= 0) ? params.ip : '未知';
       var lid = String(params.id || '').trim();
-      var e = db.emps.filter(function (x) { return x.id === lid && x.status === '在職'; })[0];
+      var act = db.emps.filter(function (x) { return x.status === '在職'; });
+      var e = act.filter(function (x) { return x.id === lid; })[0];
+      if (!e) { /* 姓名登入:同名時取密碼也對的那一位,無法分辨就視為失敗 */
+        var byName = act.filter(function (x) { return x.name === lid; });
+        var okPw = byName.filter(function (x) { return x.password === params.password; });
+        e = okPw.length === 1 ? okPw[0] : (okPw.length > 1 ? null : byName[0]);
+      }
       if (!e || e.password !== params.password) {
         db.loginLog.push({ time: nowStr(), empId: lid.slice(0, 30), name: e ? e.name : '', result: '失敗', ip: ip, ua: String(params.ua || '').slice(0, 200) });
         save(db);
-        throw new Error('員編或密碼錯誤');
+        throw new Error('帳號或密碼錯誤');
       }
       var last = db.loginLog.filter(function (l) { return l.empId === e.id && l.result === '成功'; }).pop();
       db.loginLog.push({ time: nowStr(), empId: e.id, name: e.name, result: '成功', ip: ip, ua: String(params.ua || '').slice(0, 200) });

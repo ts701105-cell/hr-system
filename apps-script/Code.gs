@@ -149,7 +149,7 @@ function login_(p) {
   var pwd = String(p.password || '');
   var ip = cleanIp_(p.ip);
   var ua = String(p.ua || '').slice(0, 200);
-  if (!id || !pwd) return { ok: false, error: '請輸入員編與密碼' };
+  if (!id || !pwd) return { ok: false, error: '請輸入帳號與密碼' };
   var cache = CacheService.getScriptCache();
   var failKey = 'fail_' + id;
   var fails = Number(cache.get(failKey) || 0);
@@ -158,11 +158,11 @@ function login_(p) {
     return { ok: false, error: '登入失敗次數過多,請 15 分鐘後再試' };
   }
 
-  var emp = findEmp_(id);
+  var emp = findLoginEmp_(id, pwd);
   if (!emp || emp['狀態'] !== '在職' || emp['密碼雜湊'] !== hash_(pwd)) {
     cache.put(failKey, String(fails + 1), 900);
     logLogin_(id, emp ? emp['姓名'] : '', '失敗', ip, ua);
-    return { ok: false, error: '員編或密碼錯誤' };
+    return { ok: false, error: '帳號或密碼錯誤' };
   }
   cache.remove(failKey);
   var last = lastLogin_(id); // 先取上一次登入,再寫入這一次
@@ -170,6 +170,18 @@ function login_(p) {
   var token = Utilities.getUuid() + Utilities.getUuid();
   cache.put('tok_' + token, id, TOKEN_TTL);
   return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234'), lastLogin: last, ip: ip } };
+}
+
+/** 登入帳號可輸入「員編」或「姓名」。姓名可能同名,所以在符合的在職員工中找密碼也對的那一位;
+ *  同名又同密碼(例如生日相同)無法分辨時一律當作登入失敗,請改用員編登入。 */
+function findLoginEmp_(account, pwd) {
+  var list = readObjs_(SHEETS.EMP).filter(function (e) { return e['狀態'] === '在職'; });
+  var byId = list.filter(function (e) { return String(e['員編']) === account; })[0];
+  if (byId) return byId;
+  var h = hash_(pwd);
+  var hit = list.filter(function (e) { return String(e['姓名']).trim() === account && e['密碼雜湊'] === h; });
+  if (hit.length === 1) return hit[0];
+  return hit.length > 1 ? null : (list.filter(function (e) { return String(e['姓名']).trim() === account; })[0] || null);
 }
 
 /** IP 由瀏覽器自行回報(Apps Script 看不到連線來源),只接受 IPv4 / IPv6 格式,其他一律記為「未知」 */
@@ -338,7 +350,7 @@ function employeesImport_(u, p) {
     if (!role) err.push('角色必須是 員工/主管/管理員');
     if (status !== '在職' && status !== '離職') err.push('狀態必須是 在職 或 離職');
     if (hire && !validDate_(hire)) err.push('到職日需為有效日期,格式 YYYY-MM-DD');
-    if (pwd && pwd.length < 8) err.push('初始密碼至少 8 碼');
+    if (pwd && pwd.length < 6) err.push('初始密碼至少 6 碼'); // 初始密碼可用生日 6 碼;員工自行改密碼時仍要求至少 8 碼
     if (id && id === u['員編'] && (role !== 'admin' || status !== '在職')) err.push('不能降級或停用自己');
     if (id) seen[id] = line;
     if (err.length) errors.push({ line: line, id: id, message: err.join(';') });
