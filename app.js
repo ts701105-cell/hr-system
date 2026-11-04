@@ -135,7 +135,7 @@
       ['欄位', '說明'], ['員編', '必填。英數字、底線、連字號,最多 20 碼。已存在的員編會更新資料'], ['姓名', '必填'],
       ['角色', '員工 / 主管 / 管理員(留空視為員工)'], ['主管員編', '選填。必須是已存在或同檔案內、角色為主管/管理員的員編'],
       ['到職日', '格式 YYYY-MM-DD(也接受 2025/3/1)'], ['狀態', '在職 / 離職(留空視為在職)'],
-      ['初始密碼', '選填,至少 6 碼(可用生日 6 碼)。新員工留空會自動產生隨機密碼;既有員工留空則不改密碼']]);
+      ['初始密碼', '選填,至少 6 碼(可用民國生日 7 碼,例如 0730518)。新員工留空會自動產生隨機密碼;既有員工留空則不改密碼']]);
     help['!cols'] = [{ wch: 12 }, { wch: 70 }];
     X.utils.book_append_sheet(wb, help, '填寫說明');
     X.writeFile(wb, '員工匯入範本.xlsx');
@@ -230,9 +230,10 @@
   function renderLogin() {
     clearInterval(clockTimer);
     app.innerHTML = '<div class="login card"><h1>' + esc(cfg.COMPANY_NAME || '人事管理系統') + (API.demo ? '<span class="demo-tag">示範模式</span>' : '') + '</h1>' +
-      '<form id="lf" class="form" style="grid-template-columns:1fr">' + field('li', '帳號(姓名或員編)', '', 'text', 'autocomplete="username" required') +
+      '<form id="lf" class="form" style="grid-template-columns:1fr">' + field('li', '帳號(姓名)', '', 'text', 'autocomplete="username" required') +
       field('lp', '密碼', '', 'password', 'autocomplete="current-password" required') +
       '<button class="primary" type="submit">登入</button></form>' +
+      '<p class="hint"><b>帳號</b>:您的姓名。<b>初始密碼</b>:民國出生年月日共 7 碼(年 3 碼 + 月 2 碼 + 日 2 碼),例如民國 73 年 5 月 18 日請輸入 <b>0730518</b>。登入後請到「修改密碼」改成自己的密碼。</p>' +
       '<p class="hint" id="myip">正在取得您的 IP…</p><p class="hint">登入時系統會記錄時間與 IP 位址,供安全稽核使用。</p>' +
       (API.demo ? '<p class="hint">示範帳號:管理員 A001 / admin1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
     getIP().then(function (ip) { var el = document.getElementById('myip'); if (el) el.textContent = ip ? '您目前的 IP:' + ip : '無法取得 IP(仍可登入,紀錄會標示為「未知」)'; });
