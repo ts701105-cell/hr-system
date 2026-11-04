@@ -22,7 +22,7 @@ var HEADERS = {
   '打卡': ['時間', '日期', '員編', '姓名', '類型', '緯度', '經度', '距離(公尺)', '地點', '結果'],
   '地點': ['地點ID', '名稱', '緯度', '經度', '半徑(公尺)', '啟用'],
   '排班': ['日期', '員編', '姓名', '班別', '上班', '下班'],
-  '班別': ['班別', '上班', '下班'],
+  '班別': ['班別', '上班', '下班', '單位'],
   '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置']
 };
 
@@ -636,7 +636,7 @@ function locationsImport_(u, p) {
 /* ============ 排班 ============ */
 
 function shiftTypes_() {
-  return readObjs_(SHEETS.SHIFT_TYPE).map(function (r) { return { name: r['班別'], start: r['上班'], end: r['下班'] }; });
+  return readObjs_(SHEETS.SHIFT_TYPE).map(function (r) { return { name: r['班別'], start: r['上班'], end: r['下班'], unit: r['單位'] || '' }; });
 }
 
 function shiftsList_(u, p) {

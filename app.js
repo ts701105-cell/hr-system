@@ -507,12 +507,20 @@
     var canEdit = user.role !== 'employee';
     var res = await Promise.all([call('shifts.list', { month: month }), call('shifts.types'), canEdit ? call('employees.list') : Promise.resolve([])]);
     var shifts = res[0], types = res[1];
-    var emps = res[2].filter(function (e) { return e.status === '在職' && (user.role === 'admin' || e.id !== user.id); });
+    var allEmps = res[2].filter(function (e) { return e.status === '在職' && (user.role === 'admin' || e.id !== user.id); });
+    /* 派駐單位 = 員工的「部門」欄(例如 寶雅、鷹世服);可依單位篩選員工,並只顯示該單位可用的班別 */
+    var units = [];
+    allEmps.forEach(function (e) { if (e.dept && units.indexOf(e.dept) < 0) units.push(e.dept); });
+    var unit = units.indexOf(viewSchedule.unit) >= 0 ? viewSchedule.unit : '';
+    var emps = unit ? allEmps.filter(function (e) { return e.dept === unit; }) : allEmps;
+    if (unit) types = types.filter(function (t) { return !t.unit || t.unit === unit; });
     var n = daysIn(month), WD = ['日', '一', '二', '三', '四', '五', '六'];
     var map = {}; shifts.forEach(function (s) { map[s.date + '|' + s.empId] = s.shift; });
     var dirty = {};
 
-    var head = '<div class="row"><h2 style="margin:0">排班</h2><div class="spacer"></div><button class="sm" id="pm">◀</button><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><button class="sm" id="nm">▶</button>' +
+    var unitSel = (canEdit && units.length) ? '<select id="unit" style="width:auto"><option value="">全部單位</option>' +
+      units.map(function (u) { return '<option' + (u === unit ? ' selected' : '') + '>' + esc(u) + '</option>'; }).join('') + '</select>' : '';
+    var head = '<div class="row"><h2 style="margin:0">排班</h2><div class="spacer"></div>' + unitSel + '<button class="sm" id="pm">◀</button><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><button class="sm" id="nm">▶</button>' +
       (canEdit ? '<button class="primary" id="sv" disabled>儲存排班</button>' : '') + '</div>';
 
     var body = '';
@@ -539,6 +547,7 @@
 
     function go(m) { viewSchedule.month = m; viewSchedule(main).catch(function (e) { toast(e.message, true); }); }
     $('#mon').onchange = function () { if (this.value) go(this.value); };
+    if ($('#unit')) $('#unit').onchange = function () { viewSchedule.unit = this.value; go(month); };
     $('#pm').onclick = function () { var p = month.split('-'); go(fmtDate(new Date(+p[0], +p[1] - 2, 1)).slice(0, 7)); };
     $('#nm').onclick = function () { var p = month.split('-'); go(fmtDate(new Date(+p[0], +p[1], 1)).slice(0, 7)); };
     if (canEdit) {
