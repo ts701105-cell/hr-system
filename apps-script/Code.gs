@@ -869,7 +869,7 @@ var DRIVE_FOLDER_ID = '1UDKmu8_Ns_4PlZu6Q771iX55PMZP0HaR';
 
 var SYNC_UNITS = {
   '寶雅': { file: '寶雅班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '寶雅夜班' : '寶雅早班'; } },
-  '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function (label) { return /^早\s*8:/.test(label) ? '鷹世服早班(8-17)' : '鷹世服早班'; } }
+  '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function () { return '鷹世服早班'; } }
 };
 
 function syncDriveRoute_(u, p) {
