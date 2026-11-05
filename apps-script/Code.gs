@@ -741,7 +741,7 @@ function signupOpen_(u, p) {
       if (!validDate_(d)) return false;
       if (month && d.slice(0, 7) !== month) return false;
       if (unit && s['單位'] !== unit) return false;
-      return mgr || d >= t;
+      return mgr || d > t; // 員工看不到今天(含)以前的班
     })
     .map(function (s) {
       var k = s['日期'] + '|' + s['單位'] + '|' + s['班別'], ty = types[s['班別']] || {};
@@ -776,7 +776,7 @@ function findSlot_(date, unit, shift) {
 function signupApply_(u, p) {
   var date = String(p.date || ''), unit = String(p.unit || ''), shift = String(p.shift || '');
   if (!validDate_(date)) throw new Error('日期格式錯誤');
-  if (date < today_()) throw new Error('已過報名日期');
+  if (date <= today_()) throw new Error('當天(含今天)已截止報名,請報名明天以後的班');
   if (!unit || String(u['部門'] || '') !== unit) throw new Error('只能報名自己所屬單位的班');
   var slot = findSlot_(date, unit, shift);
   if (!slot) throw new Error('此日期未開放報名');
