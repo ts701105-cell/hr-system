@@ -889,6 +889,29 @@ function syncDriveDaily() {
   });
 }
 
+/** 給時間驅動觸發程序用(建議每 15 分鐘):只有班表 .xlsx 的「最後修改時間」變了才同步,沒變就直接結束。
+ *  Apps Script 無法直接監聽雲端硬碟檔案變更,所以用定時檢查修改時間的方式達到「有變更就自動同步」。 */
+function syncDriveIfChanged() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return; // 有人正在操作系統,下一輪再檢查
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+    var month = today_().slice(0, 7);
+    Object.keys(SYNC_UNITS).forEach(function (unit) {
+      var it = folder.getFilesByName(SYNC_UNITS[unit].file);
+      if (!it.hasNext()) return;
+      var stamp = month + '|' + it.next().getLastUpdated().getTime(); // 跨月也會重新同步
+      var key = 'sync_' + unit;
+      if (props.getProperty(key) === stamp) return;
+      try { Logger.log(JSON.stringify(syncDriveUnit_(unit, month))); props.setProperty(key, stamp); }
+      catch (e) { Logger.log(unit + ' 同步失敗: ' + e.message); }
+    });
+  } finally {
+    try { lock.releaseLock(); } catch (x) { /* 未持有鎖 */ }
+  }
+}
+
 function syncDriveUnit_(unit, month) {
   var cfg = SYNC_UNITS[unit];
   var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);

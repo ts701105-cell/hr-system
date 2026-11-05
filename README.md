@@ -101,7 +101,7 @@ Repo → Settings → Pages → Source 選 `Deploy from a branch`,Branch 選 `ma
 1. Apps Script 專案貼入新的 `Code.gs` 與 `appsscript.json`(直接讀取 .xlsx 檔,不需要 Drive 進階服務),儲存後重新授權(會要求雲端硬碟權限)。
 2. 「班別」工作表需有:寶雅早班、寶雅夜班、鷹世服早班(寶雅只有早、夜班;鷹世服只有早班)(匯入檔的「班別」分頁已備好)。
 3. 班表上的姓名要和「員工」工作表一致;對不到的人會列在結果視窗,補上員工後再同步一次。
-4. 想每天自動同步:Apps Script 左側「觸發條件」新增時間驅動,執行函式 `syncDriveDaily`。
+4. 想要班表檔一有變更就自動同步:Apps Script 左側「觸發條件」新增時間驅動(分鐘計時器,每 15 分鐘),執行函式 `syncDriveIfChanged`。它只在班表 .xlsx 的最後修改時間變了才同步;每天固定同步一次則改用 `syncDriveDaily`。
 5. 每次同步會直接解析一份約 1MB 的 Excel,一個單位約需十幾秒,不會在雲端硬碟留下任何暫存檔。
 
 ## 資料表
