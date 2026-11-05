@@ -229,7 +229,7 @@
   /* ---------- 登入 ---------- */
   function renderLogin() {
     clearInterval(clockTimer);
-    app.innerHTML = '<div class="login card"><h1>' + esc(cfg.COMPANY_NAME || '東慧公司崗山區人事管理系統') + (API.demo ? '<span class="demo-tag">示範模式</span>' : '') + '</h1>' +
+    app.innerHTML = '<div class="login card"><h1>' + esc(cfg.COMPANY_NAME || '東慧公司岡山區人事管理系統') + (API.demo ? '<span class="demo-tag">示範模式</span>' : '') + '</h1>' +
       '<form id="lf" class="form" style="grid-template-columns:1fr">' + field('li', '帳號(姓名)', '', 'text', 'autocomplete="username" required') +
       field('lp', '密碼', '', 'password', 'autocomplete="current-password" required') +
       '<button class="primary" type="submit">登入</button></form>' +
@@ -398,7 +398,7 @@
   function renderShell() {
     if (!user) return renderLogin();
     var roleName = { admin: '管理員', manager: '主管', employee: '員工' }[user.role];
-    app.innerHTML = '<div class="topbar"><div class="brand">' + esc(cfg.COMPANY_NAME || '東慧公司崗山區人事管理系統') + (API.demo ? '<span class="demo-tag">示範</span>' : '') + '</div>' +
+    app.innerHTML = '<div class="topbar"><div class="brand">' + esc(cfg.COMPANY_NAME || '東慧公司岡山區人事管理系統') + (API.demo ? '<span class="demo-tag">示範</span>' : '') + '</div>' +
       '<div class="row"><span class="who">' + esc(user.name) + '(' + esc(user.id) + ' · ' + roleName + ')</span><span class="who" id="ipb"></span><button class="sm" id="lo">登出</button></div></div>' +
       '<div class="layout"><nav class="nav" id="nav"></nav><main id="main"></main></div>';
     $('#lo').onclick = function () { API.logout(); user = null; location.hash = ''; renderLogin(); };
@@ -1121,7 +1121,7 @@
   }
 
   /* ---------- 啟動 ---------- */
-  document.title = cfg.COMPANY_NAME || '東慧公司崗山區人事管理系統';
+  document.title = cfg.COMPANY_NAME || '東慧公司岡山區人事管理系統';
   captureQr();
   if (API.hasToken()) {
     call('me').then(function (u) { user = u; renderShell(); }).catch(function () { API.logout(); renderLogin(); });
