@@ -773,6 +773,7 @@ function signupApply_(u, p) {
     if (String(r['日期']) === date && r['單位'] === unit && r['班別'] === shift) count++;
   });
   if (count >= (Number(slot['需求人數']) || 0)) throw new Error('名額已滿');
+  writeBackSchedule_(unit, date, shift, u['姓名'], false); // 先把名字寫進雲端硬碟班表(找不到空格會丟錯,此時不建立報名)
   sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已報名', now_()]);
   return true;
 }
@@ -787,6 +788,7 @@ function signupCancel_(u, p) {
     var r = vals[i];
     if (dstr_(r[0]) === String(p.date) && String(r[1]) === String(u['員編']) && r[3] === p.unit && r[4] === p.shift) {
       if (r[5] === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
+      try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
       return true;
     }
@@ -1004,7 +1006,7 @@ function readXlsxSheet_(blob, pick, maxCols) {
     while (rows.length < rn) rows.push(new Array(maxCols).fill(''));
     rows[rn] = arr;
   });
-  return { name: sheetName, rows: rows };
+  return { name: sheetName, rows: rows, path: target };
 }
 
 /** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列。
@@ -1053,6 +1055,111 @@ function parseScheduleRows_(rows, tz, shiftOf) {
     if (open > 0) slots.push({ date: dd.date, kind: dd.kind, need: dd.need, assigned: count[k] || 0, quota: open, shift: shiftOf(dd.kind === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') });
   });
   return { shifts: shifts, slots: slots };
+}
+
+/* ============ 報名寫回雲端硬碟班表 .xlsx ============ */
+
+function xlsxColLetter_(c) { return String.fromCharCode(65 + c); } // c: 0=A … 25=Z(班表只用到 A–I)
+function xlsxColIndex_(letters) { var n = 0; for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64); return n - 1; }
+
+function xlsxMergedRanges_(xml) {
+  var out = [], re = /<mergeCell\s+ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/g, m;
+  while ((m = re.exec(xml))) out.push({ c1: xlsxColIndex_(m[1]), r1: Number(m[2]), c2: xlsxColIndex_(m[3]), r2: Number(m[4]) });
+  return out;
+}
+
+function xlsxCellRe_(ref) { return new RegExp('<c\\b([^>]*?\\sr="' + ref + '"[^>]*?)(?:/>|>([\\s\\S]*?)</c>)'); }
+
+/** 取得儲存格原始 XML(找不到回傳 '') */
+function xlsxGetCell_(xml, ref) { var m = xml.match(xlsxCellRe_(ref)); return m ? m[0] : ''; }
+
+/** 把儲存格改成文字(text 為空字串代表清空),保留原本的樣式 s;儲存格不存在就依欄位順序插入該列。 */
+function xlsxSetCell_(xml, ref, text) {
+  var esc = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  function build(style) {
+    var st = style ? ' s="' + style + '"' : '';
+    return text === '' ? '<c r="' + ref + '"' + st + '/>' : '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t xml:space="preserve">' + esc + '</t></is></c>';
+  }
+  var re = xlsxCellRe_(ref), m = xml.match(re);
+  if (m) {
+    var sm = m[1].match(/\ss="(\d+)"/);
+    return xml.replace(re, function () { return build(sm ? sm[1] : ''); });
+  }
+  var col = ref.match(/^[A-Z]+/)[0], rn = ref.slice(col.length), ci = xlsxColIndex_(col);
+  var rowRe = new RegExp('<row\\b([^>]*?\\sr="' + rn + '"[^>]*?)(/>|>([\\s\\S]*?)</row>)');
+  var rm = xml.match(rowRe);
+  if (!rm) throw new Error('班表檔找不到第 ' + rn + ' 列');
+  var inner = rm[3] || '', ins = inner.length, cre = /<c\b[^>]*?\sr="([A-Z]+)\d+"/g, cm;
+  while ((cm = cre.exec(inner))) { if (xlsxColIndex_(cm[1]) > ci) { ins = cm.index; break; } }
+  var newInner = inner.slice(0, ins) + build('') + inner.slice(ins);
+  var attrs = rm[1].replace(/\/$/, '');
+  return xml.replace(rowRe, function () { return '<row ' + attrs.replace(/^\s+/, '') + '>' + newInner + '</row>'; });
+}
+
+/** 在班表列(二維陣列)裡找要寫入/清除的儲存格。
+ *  新增:同一週區塊、該日期那一欄、同類班別(早/夜)列中「第一個空白格」;該日期任何班別已有同名就丟錯。
+ *  清除(remove):找到該名字所在格。回傳 {ref} 或 null(清除時找不到)。 */
+function planScheduleCell_(rows, merged, date, kind, name, remove, isFree) {
+  var col = 0, hit = null, dup = false, lastMatch = null;
+  function ds(v) {
+    if (typeof v === 'number' && v > 30000 && v < 80000) { var d = new Date(Math.floor(v - 25569) * 86400000); return d.toISOString().slice(0, 10); }
+    var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[0] : '';
+  }
+  function isMerged(c, rn) { return merged.some(function (g) { return c >= g.c1 && c <= g.c2 && rn >= g.r1 && rn <= g.r2 && !(c === g.c1 && rn === g.r1); }); }
+  rows.forEach(function (r, i) {
+    var label = String(r[0] == null ? '' : r[0]).trim();
+    if (label === '日期') { var idx = r.slice(1).map(ds).indexOf(date); col = idx < 0 ? 0 : idx + 1; return; }
+    if (!col) return;
+    var m = label.match(/^(早|中|晚|夜)\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}$/);
+    if (!m) return;
+    var k = m[1] === '夜' || m[1] === '晚' ? '夜' : '早';
+    var cell = r[col], txt = String(cell == null ? '' : cell).trim(), rn = i + 1, ref = xlsxColLetter_(col) + rn;
+    if (txt && txt.indexOf(name) === 0) { dup = true; if (k === kind) lastMatch = ref; }
+    if (!remove && !hit && k === kind && !txt && !isMerged(col, rn) && (!isFree || isFree(ref))) hit = ref;
+  });
+  if (remove) return lastMatch ? { ref: lastMatch } : null;
+  if (dup) throw new Error('班表上 ' + date + ' 已經有「' + name + '」,無法重複報名');
+  if (!hit) throw new Error('班表 ' + date + ' 的' + (kind === '夜' ? '夜班' : '早班') + '找不到空白格,無法寫入(請聯絡人事確認班表)');
+  return { ref: hit };
+}
+
+/** 把報名者的名字寫進(或移出)雲端硬碟班表 .xlsx 該日期、該班別的第一個空白格。
+ *  寫入前一定先備份原檔到「班表備份」資料夾;找不到空白格就丟錯,不會覆蓋任何人。
+ *  呼叫端(doPost)已持有 Script Lock,所以與定時同步不會同時執行。 */
+function writeBackSchedule_(unit, date, shift, name, remove) {
+  var cfg = SYNC_UNITS[unit];
+  if (!cfg) return;
+  var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  var it = folder.getFilesByName(cfg.file);
+  if (!it.hasNext()) throw new Error('雲端硬碟找不到「' + cfg.file + '」,無法寫入班表');
+  var file = it.next();
+  var want = date.slice(0, 7).replace('-', '');
+  var sheet = readXlsxSheet_(file.getBlob(), function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
+  if (!sheet) throw new Error('班表檔裡沒有 ' + date.slice(0, 7) + ' 的分頁,無法寫入');
+  var parts = Utilities.unzip(file.getBlob().setContentType('application/zip'));
+  var pi = -1;
+  parts.forEach(function (b, i) { if (b.getName() === sheet.path) pi = i; });
+  if (pi < 0) throw new Error('班表檔結構異常,找不到分頁檔');
+  var xml = parts[pi].getDataAsString('UTF-8');
+  var kind = /夜/.test(shift) ? '夜' : '早';
+  var plan = planScheduleCell_(sheet.rows, xlsxMergedRanges_(xml), date, kind, name, remove, function (ref) { return !/<f[\s>]/.test(xlsxGetCell_(xml, ref)); });
+  if (!plan) return; // 取消時班表上已找不到這個名字,不用處理
+  var newXml = xlsxSetCell_(xml, plan.ref, remove ? '' : name);
+
+  // 備份原檔
+  var bf = folder.getFoldersByName('班表備份');
+  var bdir = bf.hasNext() ? bf.next() : folder.createFolder('班表備份');
+  file.makeCopy('班表備份_' + cfg.file.replace(/\.xlsx$/, '') + '_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.xlsx', bdir);
+
+  parts[pi] = Utilities.newBlob(newXml, 'application/xml', sheet.path);
+  var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  var out = Utilities.zip(parts, file.getName()).setContentType(mime);
+  var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files/' + file.getId() + '?uploadType=media', {
+    method: 'patch', contentType: mime, payload: out.getBytes(),
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error('寫入班表失敗(' + res.getResponseCode() + '):' + res.getContentText().slice(0, 200));
+  return plan.ref;
 }
 
 /* ============ 共用工具 ============ */
