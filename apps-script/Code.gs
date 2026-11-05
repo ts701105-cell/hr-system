@@ -751,6 +751,19 @@ function signupOpen_(u, p) {
     .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.unit + a.shift < b.unit + b.shift ? -1 : 1); });
 }
 
+/** 名額表「需求人數」= 班表目前尚餘缺額;報名/取消後立即加減(0 時保留列,讓員工仍看得到自己的報名)。下次同步會再以班表為準。 */
+function slotAdjust_(date, unit, shift, delta) {
+  var sh = sheet_(SHEETS.SLOT), n = sh.getLastRow();
+  var vals = n > 1 ? sh.getRange(2, 1, n - 1, 4).getValues() : [];
+  for (var i = 0; i < vals.length; i++) {
+    if (dstr_(vals[i][0]) === date && vals[i][1] === unit && vals[i][2] === shift) {
+      sh.getRange(i + 2, 4).setValue(Math.max(0, (Number(vals[i][3]) || 0) + delta));
+      return;
+    }
+  }
+  if (delta > 0) { sh.appendRow([date, unit, shift, delta]); sh.getRange(sh.getLastRow(), 1).setNumberFormat('@').setValue(date); }
+}
+
 function findSlot_(date, unit, shift) {
   var list = readObjs_(SHEETS.SLOT);
   for (var i = 0; i < list.length; i++) {
@@ -772,9 +785,10 @@ function signupApply_(u, p) {
     if (String(r['員編']) === String(u['員編']) && String(r['日期']) === date) throw new Error('這一天已經報名過了');
     if (String(r['日期']) === date && r['單位'] === unit && r['班別'] === shift) count++;
   });
-  if (count >= (Number(slot['需求人數']) || 0)) throw new Error('名額已滿');
+  if ((Number(slot['需求人數']) || 0) <= 0) throw new Error('名額已滿'); // 「需求人數」欄 = 班表目前尚餘缺額
   writeBackSchedule_(unit, date, shift, u['姓名'], false); // 先把名字寫進雲端硬碟班表(找不到空格會丟錯,此時不建立報名)
   sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已報名', now_()]);
+  slotAdjust_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
   return true;
 }
 
@@ -790,6 +804,7 @@ function signupCancel_(u, p) {
       if (r[5] === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
       try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
+      slotAdjust_(String(p.date), p.unit, p.shift, 1);
       return true;
     }
   }
@@ -947,6 +962,12 @@ function syncDriveUnit_(unit, month) {
     items.push({ date: s.date, empId: id, shift: s.shift });
   });
   var admin = { '角色': 'admin', '員編': 'SYSTEM' };
+  // 班表上已經沒有缺額的班(補滿了)→ 名額歸 0 移除,網頁上的「尚餘缺額」才會和班表一致
+  var keep = {};
+  parsed.slots.forEach(function (q) { keep[q.date + '|' + q.shift] = true; });
+  var stale = readObjs_(SHEETS.SLOT).filter(function (r) { return r['單位'] === unit && String(r['日期']).slice(0, 7) === month && !keep[r['日期'] + '|' + r['班別']]; })
+    .map(function (r) { return { date: String(r['日期']), unit: unit, shift: r['班別'], quota: 0 }; });
+  for (var k = 0; k < stale.length; k += 250) signupQuotaSave_(admin, { items: stale.slice(k, k + 250) });
   for (var i = 0; i < items.length; i += 400) shiftsSave_(admin, { items: items.slice(i, i + 400) });
   for (var j = 0; j < parsed.slots.length; j += 250) signupQuotaSave_(admin, { items: parsed.slots.slice(j, j + 250).map(function (q) { return { date: q.date, unit: unit, shift: q.shift, quota: q.quota }; }) });
   return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched) };

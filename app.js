@@ -588,11 +588,11 @@
     if (!mgr) {
       var slots = await call('signup.open', { month: month });
       var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;報名後等主管錄取,錄取後會出現在「排班」。' : '您尚未設定所屬單位,請聯絡人資。';
-      main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '已報名 / 名額', '狀態', ''], slots.map(function (s, i) {
-        var full = s.count >= s.quota;
+      main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '尚餘缺額', '狀態', ''], slots.map(function (s, i) {
+        var full = s.quota <= 0;
         var st = s.mine === '已錄取' ? badge('已錄取') : s.mine ? badge('已報名') : full ? '<span class="badge bad">額滿</span>' : '';
         var btn = s.mine === '已報名' ? '<button class="sm danger" data-c="' + i + '">取消報名</button>' : (!s.mine && !full ? '<button class="sm primary" data-a="' + i + '">報名</button>' : '');
-        return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + ' / ' + s.quota + '</td><td>' + st + '</td><td>' + btn + '</td></tr>';
+        return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.quota + '</td><td>' + st + '</td><td>' + btn + '</td></tr>';
       }), '這個月目前沒有開放報名的班') + '</div>';
       bindBar();
       function act(sel, action, msg) {
@@ -620,7 +620,7 @@
 
     var syncBar = user.role === 'admin' ? '<div class="row" style="gap:8px;margin-bottom:8px"><button id="sync">從雲端硬碟同步 ' + esc(month) + ' 班表</button>' +
       '<span class="hint">讀取寶雅、鷹世服班表,更新「排班」與「名額」(單向,不會改動雲端硬碟檔案)</span></div>' : '';
-    var quotaCard = '<div class="card"><h3>名額設定</h3>' + syncBar + table(['日期', '班別', '單位', '已報名', '需求人數'], qslots.map(function (s, i) {
+    var quotaCard = '<div class="card"><h3>名額設定</h3>' + syncBar + table(['日期', '班別', '單位', '已報名', '尚餘缺額'], qslots.map(function (s, i) {
       return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + '</td><td><input type="number" min="0" max="500" value="' + s.quota + '" data-q="' + i + '" style="width:80px"></td></tr>';
     }), '這個月還沒有設定名額') + '<div class="row" style="margin-top:8px"><div class="spacer"></div><button class="primary" id="qsv" disabled>儲存名額(填 0 = 移除)</button></div>' +
       '<h3 style="margin-top:16px">新增名額</h3><div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-end">' +
