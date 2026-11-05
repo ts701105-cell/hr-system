@@ -166,10 +166,11 @@ function login_(p) {
     return { ok: false, error: '帳號或密碼錯誤' };
   }
   cache.remove(failKey);
-  var last = lastLogin_(id); // 先取上一次登入,再寫入這一次
-  logLogin_(id, emp['姓名'], '成功', ip, ua);
+  var empId = String(emp['員編']); // 輸入的帳號可能是姓名,token 與登入紀錄一律用員編
+  var last = lastLogin_(empId); // 先取上一次登入,再寫入這一次
+  logLogin_(empId, emp['姓名'], '成功', ip, ua);
   var token = Utilities.getUuid() + Utilities.getUuid();
-  cache.put('tok_' + token, id, TOKEN_TTL);
+  cache.put('tok_' + token, empId, TOKEN_TTL);
   return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234'), lastLogin: last, ip: ip } };
 }
 
