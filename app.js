@@ -396,7 +396,7 @@
   var ROUTES = [
     { path: 'punch', label: '打卡', roles: ['employee', 'manager', 'admin'], view: viewPunch },
     { path: 'leave', label: '請假', roles: ['employee', 'manager', 'admin'], view: viewLeave },
-    { path: 'schedule', label: '排班', roles: ['employee', 'manager', 'admin'], view: viewSchedule },
+    { path: 'schedule', label: '排班狀態', roles: ['employee', 'manager', 'admin'], view: viewSchedule },
     { path: 'signup', label: '排班報名', roles: ['employee', 'manager', 'admin'], view: viewSignup },
     { path: 'approvals', label: '假單簽核', roles: ['manager', 'admin'], group: '主管', view: viewApprovals },
     { path: 'attendance', label: '出勤報表', roles: ['manager', 'admin'], group: '主管', view: viewAttendance },
@@ -665,7 +665,7 @@
 
     var unitSel = (canEdit && units.length) ? '<select id="unit" style="width:auto"><option value="">全部單位</option>' +
       units.map(function (u) { return '<option' + (u === unit ? ' selected' : '') + '>' + esc(u) + '</option>'; }).join('') + '</select>' : '';
-    var head = '<div class="row"><h2 style="margin:0">排班</h2><div class="spacer"></div>' + unitSel + '<button class="sm" id="pm">◀</button><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><button class="sm" id="nm">▶</button>' +
+    var head = '<div class="row"><h2 style="margin:0">排班狀態</h2><div class="spacer"></div>' + unitSel + '<button class="sm" id="pm">◀</button><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"><button class="sm" id="nm">▶</button>' +
       (canEdit ? '<button class="primary" id="sv" disabled>儲存排班</button>' : '') + '</div>';
 
     var body = '';
