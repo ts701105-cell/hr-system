@@ -893,19 +893,11 @@ function syncDriveUnit_(unit, month) {
   var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
   if (!it.hasNext()) throw new Error('資料夾裡找不到「' + cfg.file + '」');
   var src = it.next();
-  var tmp = Drive.Files.copy({ title: 'tmp-sync-' + unit + '-' + Date.now(), mimeType: 'application/vnd.google-apps.spreadsheet' }, src.getId(), { convert: true });
-  var parsed;
-  try {
-    var ss = SpreadsheetApp.openById(tmp.id);
-    var want = month.replace('-', '');
-    var sh = ss.getSheets().filter(function (s) { return /^班表/.test(s.getName()) && s.getName().replace(/\D/g, '') === want; })[0];
-    if (!sh) return { unit: unit, month: month, sheet: '', shifts: 0, slots: 0, unmatched: [], note: '班表檔裡沒有 ' + month + ' 的分頁' };
-    var lastRow = sh.getLastRow(), lastCol = Math.min(sh.getLastColumn(), 9);
-    parsed = parseScheduleRows_(sh.getRange(1, 1, lastRow, lastCol).getValues(), ss.getSpreadsheetTimeZone(), cfg.shiftOf);
-    parsed.sheetName = sh.getName();
-  } finally {
-    try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e) { /* 暫存檔清不掉也不影響結果,可手動刪除 */ }
-  }
+  var want = month.replace('-', '');
+  var sheetRows = readXlsxSheet_(src.getBlob(), function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
+  if (!sheetRows) return { unit: unit, month: month, sheet: '', shifts: 0, slots: 0, unmatched: [], note: '班表檔裡沒有 ' + month + ' 的分頁' };
+  var parsed = parseScheduleRows_(sheetRows.rows, 'Asia/Taipei', cfg.shiftOf);
+  parsed.sheetName = sheetRows.name;
 
   // 寫入前先確認用到的班別都已在「班別」工作表建立,避免寫到一半才報錯
   var have = {}, need = {};
@@ -934,12 +926,70 @@ function syncDriveUnit_(unit, month) {
   return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched) };
 }
 
+/** 直接讀 .xlsx(zip + XML),不需要 Drive 進階服務。回傳 {name, rows} 或 null(找不到分頁)。
+ *  數字儲存格維持數字(日期是 Excel 序號,由 parseScheduleRows_ 轉換)。 */
+function readXlsxSheet_(blob, pick, maxCols) {
+  var NS = XmlService.getNamespace('http://schemas.openxmlformats.org/spreadsheetml/2006/main');
+  var RNS = XmlService.getNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+  var files = {};
+  Utilities.unzip(blob.setContentType('application/zip')).forEach(function (f) { files[f.getName()] = f; });
+  function xml(name) { if (!files[name]) return null; return XmlService.parse(files[name].getDataAsString('UTF-8')).getRootElement(); }
+  var wb = xml('xl/workbook.xml');
+  var rels = xml('xl/_rels/workbook.xml.rels');
+  var target = null, sheetName = '';
+  wb.getChild('sheets', NS).getChildren('sheet', NS).forEach(function (sh) {
+    var n = sh.getAttribute('name').getValue();
+    if (target || !pick(n)) return;
+    var rid = sh.getAttribute('id', RNS).getValue();
+    rels.getChildren().forEach(function (rl) {
+      if (rl.getAttribute('Id').getValue() === rid) { target = rl.getAttribute('Target').getValue().replace(/^\/?(xl\/)?/, 'xl/'); sheetName = n; }
+    });
+  });
+  if (!target) return null;
+  var strings = [];
+  var sst = xml('xl/sharedStrings.xml');
+  if (sst) sst.getChildren('si', NS).forEach(function (si) {
+    var t = '';
+    si.getChildren().forEach(function (ch) {
+      if (ch.getName() === 't') t += ch.getText();
+      else if (ch.getName() === 'r') { var tt = ch.getChild('t', NS); if (tt) t += tt.getText(); }
+    });
+    strings.push(t);
+  });
+  function colIdx(ref) { var m = ref.match(/^([A-Z]+)/)[1], n = 0; for (var i = 0; i < m.length; i++) n = n * 26 + (m.charCodeAt(i) - 64); return n - 1; }
+  var rows = [];
+  xml(target).getChild('sheetData', NS).getChildren('row', NS).forEach(function (rw) {
+    var rn = Number(rw.getAttribute('r').getValue()) - 1;
+    var arr = [];
+    for (var k = 0; k < maxCols; k++) arr.push('');
+    rw.getChildren('c', NS).forEach(function (c) {
+      var ci = colIdx(c.getAttribute('r').getValue());
+      if (ci >= maxCols) return;
+      var t = c.getAttribute('t') ? c.getAttribute('t').getValue() : 'n';
+      var v = c.getChild('v', NS), val = '';
+      if (t === 'inlineStr') { var is = c.getChild('is', NS), tt = is && is.getChild('t', NS); val = tt ? tt.getText() : ''; }
+      else if (v) {
+        var raw = v.getText();
+        if (t === 's') val = strings[Number(raw)] || '';
+        else if (t === 'str') val = raw;
+        else if (t === 'b' || t === 'e') val = '';
+        else val = raw === '' ? '' : Number(raw);
+      }
+      arr[ci] = val;
+    });
+    while (rows.length < rn) rows.push(new Array(maxCols).fill(''));
+    rows[rn] = arr;
+  });
+  return { name: sheetName, rows: rows };
+}
+
 /** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列。
  *  名額 = 缺額 = 需求人數 − 已排人數(同一天同一類班別,最少 0);缺額 0 的班不開放報名。 */
 function parseScheduleRows_(rows, tz, shiftOf) {
   var shifts = [], demand = {}, assigned = {}, dates = null;
   function ds(v) {
     if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+    if (typeof v === 'number' && v > 30000 && v < 80000) return Utilities.formatDate(new Date(Math.floor(v - 25569) * 86400000), 'UTC', 'yyyy-MM-dd'); // Excel 日期序號
     var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
     return m ? m[0] : '';
   }
