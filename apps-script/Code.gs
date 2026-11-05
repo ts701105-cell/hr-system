@@ -1033,7 +1033,7 @@ function readXlsxSheet_(blob, pick, maxCols) {
 /** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列。
  *  名額 = 缺額 = 需求人數 − 已排人數(同一天同一類班別,最少 0);缺額 0 的班不開放報名。 */
 function parseScheduleRows_(rows, tz, shiftOf) {
-  var shifts = [], demand = {}, assigned = {}, dates = null;
+  var shifts = [], demand = {}, assigned = {}, gap = {}, avail = {}, dates = null;
   function ds(v) {
     if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
     if (typeof v === 'number' && v > 30000 && v < 80000) return Utilities.formatDate(new Date(Math.floor(v - 25569) * 86400000), 'UTC', 'yyyy-MM-dd'); // Excel 日期序號
@@ -1059,21 +1059,42 @@ function parseScheduleRows_(rows, tz, shiftOf) {
       }
       return;
     }
+    var kindOf = function (ch) { return ch === '晚' || ch === '夜' ? '夜' : '早'; };
+    var gm = label.match(/^缺額[:：]?\s*(早|中|晚|夜)/);          // 「缺額」列 = 可出勤人數 − 需求人數,負數代表還缺幾個人
+    if (gm) {
+      for (var c3 = 1; c3 < r.length; c3++) {
+        var d3 = dates[c3 - 1], g = r[c3];
+        if (d3 && typeof g === 'number') gap[d3 + '|' + kindOf(gm[1])] = g;
+      }
+      return;
+    }
+    var am = label.match(/^(早|中|晚|夜)班可出勤人數/);
+    if (am) {
+      for (var c4 = 1; c4 < r.length; c4++) {
+        var d4 = dates[c4 - 1];
+        if (d4 && typeof r[c4] === 'number') avail[d4 + '|' + kindOf(am[1])] = r[c4];
+      }
+      return;
+    }
     var dm = label.match(/^(早|中|晚|夜)班(需求|預計)支援人數/);
     if (dm) {
-      var kind = dm[1] === '晚' || dm[1] === '夜' ? '夜' : '早';
       for (var c2 = 1; c2 < r.length; c2++) {
         var d2 = dates[c2 - 1], n = Number(r[c2]);
-        if (d2 && n > 0) demand[d2 + '|' + kind] = { date: d2, kind: kind, need: Math.floor(n) };
+        if (d2 && n > 0) demand[d2 + '|' + kindOf(dm[1])] = { date: d2, kind: kindOf(dm[1]), need: Math.floor(n) };
       }
     }
   });
-  var count = {};
-  Object.keys(assigned).forEach(function (k) { var p = k.split('|'); var kk = p[0] + '|' + p[1]; count[kk] = (count[kk] || 0) + 1; });
-  var slots = [];
-  Object.keys(demand).forEach(function (k) {
-    var dd = demand[k], open = dd.need - (count[k] || 0);
-    if (open > 0) slots.push({ date: dd.date, kind: dd.kind, need: dd.need, assigned: count[k] || 0, quota: open, shift: shiftOf(dd.kind === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') });
+  // 尚餘缺額:優先用班表的「缺額」列(負數 = 少幾個人);沒有「缺額」列的單位(鷹世服)用「可出勤人數 − 需求人數」,公式相同
+  var slots = [], seenKey = {};
+  Object.keys(gap).concat(Object.keys(demand)).forEach(function (k) {
+    if (seenKey[k]) return; seenKey[k] = true;
+    var dd = demand[k], short;
+    if (k in gap) short = -gap[k];
+    else if (dd && k in avail) short = dd.need - avail[k];
+    else return;
+    if (short <= 0) return;
+    var pr = k.split('|');
+    slots.push({ date: pr[0], kind: pr[1], need: dd ? dd.need : null, assigned: avail[k] != null ? avail[k] : null, quota: Math.floor(short), shift: shiftOf(pr[1] === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') });
   });
   return { shifts: shifts, slots: slots };
 }
@@ -1092,6 +1113,15 @@ function xlsxMergedRanges_(xml) {
 function xlsxCellRe_(ref) { return new RegExp('<c\\b([^>]*?\\sr="' + ref + '"[^>]*?)(?:/>|>([\\s\\S]*?)</c>)'); }
 
 /** 取得儲存格原始 XML(找不到回傳 '') */
+/** 公式儲存格的快取值 ± delta(Drive 上的 .xlsx 不會自己重算,不更新的話「可出勤人數」「缺額」會是舊的) */
+function xlsxBumpCache_(xml, ref, delta) {
+  var re = xlsxCellRe_(ref), m = xml.match(re);
+  if (!m || !m[2]) return xml;
+  var vm = m[2].match(/<v>(-?\d+(?:\.\d+)?)<\/v>/);
+  if (!vm) return xml;
+  return xml.replace(re, function (all) { return all.replace(/<v>-?\d+(?:\.\d+)?<\/v>/, '<v>' + (Number(vm[1]) + delta) + '</v>'); });
+}
+
 function xlsxGetCell_(xml, ref) { var m = xml.match(xlsxCellRe_(ref)); return m ? m[0] : ''; }
 
 /** 把儲存格改成文字(text 為空字串代表清空),保留原本的樣式 s;儲存格不存在就依欄位順序插入該列。 */
@@ -1166,6 +1196,15 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   var plan = planScheduleCell_(sheet.rows, xlsxMergedRanges_(xml), date, kind, name, remove, function (ref) { return !/<f[\s>]/.test(xlsxGetCell_(xml, ref)); });
   if (!plan) return; // 取消時班表上已找不到這個名字,不用處理
   var newXml = xlsxSetCell_(xml, plan.ref, remove ? '' : name);
+  // 同步更新該區塊下方「可出勤人數」「缺額」兩列的快取值,讓班表和網頁的尚餘缺額維持一致
+  var cl = plan.ref.match(/^([A-Z]+)(\d+)$/), delta = remove ? -1 : 1, hasAvail = false, hasGap = false;
+  for (var ri = Number(cl[2]); ri < sheet.rows.length; ri++) {
+    var lb = String(sheet.rows[ri][0] == null ? '' : sheet.rows[ri][0]).trim();
+    if (lb === '日期') break;
+    if (!hasAvail && /可出勤人數/.test(lb)) { newXml = xlsxBumpCache_(newXml, cl[1] + (ri + 1), delta); hasAvail = true; }
+    else if (!hasGap && /^缺額/.test(lb)) { newXml = xlsxBumpCache_(newXml, cl[1] + (ri + 1), delta); hasGap = true; }
+    if (hasAvail && hasGap) break;
+  }
 
   // 備份原檔
   var bf = folder.getFoldersByName('班表備份');
