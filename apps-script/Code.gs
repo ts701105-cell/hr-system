@@ -775,6 +775,12 @@ function slotAdjust_(date, unit, shift, delta) {
   if (delta > 0) { sh.appendRow([date, unit, shift, delta]); sh.getRange(sh.getLastRow(), 1).setNumberFormat('@').setValue(date); }
 }
 
+/** 該日期所屬那一週(週一開頭)的週一日期,如 2026-11-04 → 2026-11-02 */
+function weekKey_(d) {
+  var t = new Date(d + 'T00:00:00Z'), dow = (t.getUTCDay() + 6) % 7;
+  return Utilities.formatDate(new Date(t.getTime() - dow * 86400000), 'UTC', 'yyyy-MM-dd');
+}
+
 function findSlot_(date, unit, shift) {
   var list = readObjs_(SHEETS.SLOT);
   for (var i = 0; i < list.length; i++) {
@@ -792,6 +798,11 @@ function signupApply_(u, p) {
   var slot = findSlot_(date, unit, shift);
   if (!slot) throw new Error('此日期未開放報名');
   var rows = readObjs_(SHEETS.SIGNUP), count = 0;
+  if (unit === '寶雅') { // 寶雅一週(週一到週日)最多報名 3 天
+    var wk = weekKey_(date), mine = 0;
+    rows.forEach(function (r) { if (String(r['員編']) === String(u['員編']) && r['單位'] === '寶雅' && weekKey_(String(r['日期'])) === wk) mine++; });
+    if (mine >= 3) throw new Error('寶雅一週最多只能報名 3 天(週一到週日),這週已報名 ' + mine + ' 天');
+  }
   rows.forEach(function (r) {
     if (String(r['員編']) === String(u['員編']) && String(r['日期']) === date) throw new Error('這一天已經報名過了');
     if (String(r['日期']) === date && r['單位'] === unit && r['班別'] === shift) count++;
