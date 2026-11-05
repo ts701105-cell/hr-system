@@ -756,8 +756,14 @@
         document.querySelectorAll(sel).forEach(function (b) {
           b.onclick = function () {
             var s = slots[+(b.dataset.a || b.dataset.c)];
+            var reason = '';
+            if (action === 'signup.cancel') {
+              reason = prompt('取消 ' + s.date + ' 的「' + s.shift + '」報名,班表上的名字會一併移除。\n請填寫取消原因(必填):');
+              if (!reason || reason.trim().length < 2) { if (reason !== null) toast('請填寫取消原因', true); return; }
+              reason = reason.trim();
+            }
             guard(async function () {
-              await call(action, { date: s.date, unit: s.unit, shift: s.shift });
+              await call(action, { date: s.date, unit: s.unit, shift: s.shift, reason: reason });
               toast(msg); viewSignup(main);
             }, b);
           };

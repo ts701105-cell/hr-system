@@ -30,7 +30,7 @@ var HEADERS = {
   '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置'],
   '名額': ['日期', '單位', '班別', '需求人數'],
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
-  '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因'],
+  '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因', '來源', '登入IP', '登入時間'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
 
@@ -821,6 +821,9 @@ function signupApply_(u, p) {
 
 /** 員工取消自己尚未錄取的報名。p = {date, unit, shift} */
 function signupCancel_(u, p) {
+  var reason = String(p.reason || '').trim();
+  if (reason.length < 2) throw new Error('請填寫取消原因');
+  if (reason.length > 200) throw new Error('取消原因請在 200 字以內');
   var sh = sheet_(SHEETS.SIGNUP);
   var n = sh.getLastRow();
   if (n < 2) throw new Error('找不到報名紀錄');
@@ -832,6 +835,7 @@ function signupCancel_(u, p) {
       try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
       slotAdjust_(String(p.date), p.unit, p.shift, 1);
+      recordCancel_(u, String(p.date), p.unit, p.shift, reason, '排班報名');
       return true;
     }
   }
@@ -869,8 +873,81 @@ function shiftsCancelOwn_(u, p) {
     }
   }
   slotAdjust_(date, unit, shift, 1);
-  sheet_(SHEETS.CANCEL).appendRow([now_(), date, u['員編'], u['姓名'], unit, shift, reason]); // 留下取消原因供人資查詢
+  recordCancel_(u, date, unit, shift, reason, '排班狀況');
   return true;
+}
+
+
+/* ============ 取消紀錄:寫入分頁 + 追加到雲端硬碟「公司」資料夾的 取消排名.xlsx ============ */
+
+var CANCEL_XLSX = '取消排名.xlsx';
+var CANCEL_XLSX_HEAD = ['來源', '取消時間', '員工姓名', '取消日期', '班別', '取消理由', '登錄IP', '登入時間'];
+
+function recordCancel_(u, date, unit, shift, reason, source) {
+  var login = lastLogin_(u['員編']) || {};
+  var ip = login.ip || '未知', ltime = login.time ? String(login.time) : '';
+  var t = now_();
+  var sh = sheet_(SHEETS.CANCEL);
+  if (!sh.getRange(1, 8).getValue()) sh.getRange(1, 8, 1, 3).setValues([['來源', '登入IP', '登入時間']]).setFontWeight('bold');
+  sh.appendRow([t, date, u['員編'], u['姓名'], unit, shift, reason, source, ip, ltime]);
+  try {
+    appendCancelXlsx_([source, t, u['姓名'], date, unit + ' ' + shift, reason, ip, ltime]);
+  } catch (e) { Logger.log('取消排名.xlsx 寫入失敗:' + e.message); } // 失敗不影響取消本身,紀錄仍留在「取消紀錄」分頁
+}
+
+function xmlEsc_(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ''); }
+
+function cancelRowXml_(n, vals) {
+  var cols = 'ABCDEFGH';
+  return '<row r="' + n + '">' + vals.map(function (v, i) {
+    return '<c r="' + cols[i] + n + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc_(v) + '</t></is></c>';
+  }).join('') + '</row>';
+}
+
+/** 全新的 取消排名.xlsx(只有標題列) */
+function newCancelXlsxBlob_() {
+  var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  var parts = [
+    Utilities.newBlob('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>', 'application/xml', '[Content_Types].xml'),
+    Utilities.newBlob('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>', 'application/xml', '_rels/.rels'),
+    Utilities.newBlob('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="取消排名" sheetId="1" r:id="rId1"/></sheets></workbook>', 'application/xml', 'xl/workbook.xml'),
+    Utilities.newBlob('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>', 'application/xml', 'xl/_rels/workbook.xml.rels'),
+    Utilities.newBlob('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="12" customWidth="1"/><col min="2" max="2" width="20" customWidth="1"/><col min="3" max="3" width="12" customWidth="1"/><col min="4" max="4" width="12" customWidth="1"/><col min="5" max="5" width="18" customWidth="1"/><col min="6" max="6" width="40" customWidth="1"/><col min="7" max="7" width="18" customWidth="1"/><col min="8" max="8" width="20" customWidth="1"/></cols><sheetData>' + cancelRowXml_(1, CANCEL_XLSX_HEAD) + '</sheetData></worksheet>', 'application/xml', 'xl/worksheets/sheet1.xml')
+  ];
+  return Utilities.zip(parts, CANCEL_XLSX).setContentType(mime);
+}
+
+/** 在 排班班表\公司\取消排名.xlsx 最後面追加一列;檔案或資料夾不存在就建立。 */
+function appendCancelXlsx_(vals) {
+  var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  var root = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  var fi = root.getFoldersByName('公司');
+  var dir = fi.hasNext() ? fi.next() : root.createFolder('公司');
+  var it = dir.getFilesByName(CANCEL_XLSX);
+  if (!it.hasNext()) {
+    var blob = newCancelXlsxBlob_();
+    var f = dir.createFile(blob.setName(CANCEL_XLSX));
+    it = dir.getFilesByName(CANCEL_XLSX);
+  }
+  var file = it.next();
+  var parts = Utilities.unzip(file.getBlob().setContentType('application/zip'));
+  var pi = -1;
+  parts.forEach(function (b, i) { if (b.getName() === 'xl/worksheets/sheet1.xml') pi = i; });
+  if (pi < 0) throw new Error('取消排名.xlsx 結構異常(找不到 sheet1)');
+  var xml = parts[pi].getDataAsString('UTF-8');
+  var last = 0, m, re = /<row [^>]*?r="(\d+)"/g;
+  while ((m = re.exec(xml))) last = Math.max(last, Number(m[1]));
+  var rowXml = cancelRowXml_(last + 1, vals);
+  if (/<sheetData\s*\/>/.test(xml)) xml = xml.replace(/<sheetData\s*\/>/, '<sheetData>' + rowXml + '</sheetData>');
+  else xml = xml.replace('</sheetData>', rowXml + '</sheetData>');
+  xml = xml.replace(/<dimension [^>]*\/>/, '');
+  parts[pi] = Utilities.newBlob(xml, 'application/xml', 'xl/worksheets/sheet1.xml');
+  var out = Utilities.zip(parts, CANCEL_XLSX).setContentType(mime);
+  var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files/' + file.getId() + '?uploadType=media', {
+    method: 'patch', contentType: mime, payload: out.getBytes(),
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error('更新取消排名.xlsx 失敗(' + res.getResponseCode() + ')');
 }
 
 /** 管理員:取消紀錄(含原因)。p = {month} */
