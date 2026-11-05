@@ -671,9 +671,20 @@
         '<p class="hint">班別:' + types.map(function (t) { return esc(t.name) + (t.start ? '(' + esc(t.start) + '–' + esc(t.end) + ')' : ''); }).join('、') + '。選空白代表清除排班。</p>';
     } else {
       var mine = shifts.filter(function (s) { return s.empId === user.id; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-      body = '<div class="card">' + table(['日期', '星期', '班別', '上班', '下班'], mine.map(function (s) {
-        return '<tr><td>' + esc(s.date) + '</td><td>' + WD[new Date(s.date).getDay()] + '</td><td>' + esc(s.shift) + '</td><td>' + esc(s.start) + '</td><td>' + esc(s.end) + '</td></tr>';
+      var todayStr = fmtDate(new Date());
+      body = '<p class="hint">明天以後的班可以按「取消」,取消後名額會還給別人;當天及過去的班請聯絡主管。</p><div class="card">' + table(['日期', '星期', '班別', '上班', '下班', ''], mine.map(function (s, i) {
+        var btn = s.date > todayStr ? '<button class="sm danger" data-x="' + i + '">取消</button>' : '';
+        return '<tr><td>' + esc(s.date) + '</td><td>' + WD[new Date(s.date).getDay()] + '</td><td>' + esc(s.shift) + '</td><td>' + esc(s.start) + '</td><td>' + esc(s.end) + '</td><td>' + btn + '</td></tr>';
       }), '本月尚無排班') + '</div>';
+      setTimeout(function () {
+        document.querySelectorAll('[data-x]').forEach(function (b) {
+          b.onclick = function () {
+            var s = mine[+b.dataset.x];
+            if (!confirm('確定取消 ' + s.date + ' 的「' + s.shift + '」?取消後班表上的名字會一併移除。')) return;
+            guard(async function () { await call('shifts.cancel', { date: s.date }); toast('已取消'); viewSchedule(main).catch(function (e) { toast(e.message, true); }); }, b);
+          };
+        });
+      }, 0);
     }
     main.innerHTML = head + body;
 

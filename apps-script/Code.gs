@@ -137,6 +137,7 @@ var ROUTES = {
   'shifts.types': shiftTypes_,
   'shifts.list': shiftsList_,
   'shifts.save': shiftsSave_,
+  'shifts.cancel': shiftsCancelOwn_,
   'signup.open': signupOpen_,
   'signup.apply': signupApply_,
   'signup.cancel': signupCancel_,
@@ -832,6 +833,32 @@ function signupCancel_(u, p) {
     }
   }
   throw new Error('找不到報名紀錄');
+}
+
+/** 員工取消自己「明天以後」的班(不論是網站報名的,還是本來就排在班表上的):
+ *  從雲端硬碟班表清掉名字(寫前備份)、刪除排班、移除對應報名紀錄、尚餘缺額加回 1。p = {date} */
+function shiftsCancelOwn_(u, p) {
+  var date = String(p.date || '');
+  if (!validDate_(date)) throw new Error('日期格式錯誤');
+  if (date <= today_()) throw new Error('只能取消明天以後的班,當天及過去的班請聯絡主管');
+  var sh = sheet_(SHEETS.SHIFT), n = sh.getLastRow();
+  var vals = n > 1 ? sh.getRange(2, 1, n - 1, 6).getValues() : [], hit = -1;
+  vals.forEach(function (r, i) { if (dstr_(r[0]) === date && String(r[1]) === String(u['員編'])) hit = i; });
+  if (hit < 0) throw new Error('找不到這一天的排班');
+  var shift = String(vals[hit][3]), unit = '';
+  Object.keys(SYNC_UNITS).forEach(function (k) { if (shift.indexOf(k) === 0) unit = k; });
+  if (!unit) throw new Error('這個班別不能自行取消,請聯絡主管');
+  writeBackSchedule_(unit, date, shift, u['姓名'], true); // 先清班表(失敗就整個中止,不會半套)
+  sh.deleteRow(hit + 2);
+  var ss = sheet_(SHEETS.SIGNUP), m = ss.getLastRow();
+  if (m > 1) {
+    var rows = ss.getRange(2, 1, m - 1, 7).getValues();
+    for (var i = rows.length - 1; i >= 0; i--) {
+      if (dstr_(rows[i][0]) === date && String(rows[i][1]) === String(u['員編'])) ss.deleteRow(i + 2);
+    }
+  }
+  slotAdjust_(date, unit, shift, 1);
+  return true;
 }
 
 /** 主管/管理員:報名名單(管理員看全部,主管只看直屬部屬)。p = {month, unit} */
