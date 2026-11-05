@@ -835,12 +835,11 @@ function signupCancel_(u, p) {
   throw new Error('找不到報名紀錄');
 }
 
-/** 員工取消自己「明天以後」的班(不論是網站報名的,還是本來就排在班表上的):
+/** 員工取消自己的班,上班前 30 分鐘以前都可以(不論是網站報名的,還是本來就排在班表上的):
  *  從雲端硬碟班表清掉名字(寫前備份)、刪除排班、移除對應報名紀錄、尚餘缺額加回 1。p = {date} */
 function shiftsCancelOwn_(u, p) {
   var date = String(p.date || '');
   if (!validDate_(date)) throw new Error('日期格式錯誤');
-  if (date <= today_()) throw new Error('只能取消明天以後的班,當天及過去的班請聯絡主管');
   var sh = sheet_(SHEETS.SHIFT), n = sh.getLastRow();
   var vals = n > 1 ? sh.getRange(2, 1, n - 1, 6).getValues() : [], hit = -1;
   vals.forEach(function (r, i) { if (dstr_(r[0]) === date && String(r[1]) === String(u['員編'])) hit = i; });
@@ -848,6 +847,13 @@ function shiftsCancelOwn_(u, p) {
   var shift = String(vals[hit][3]), unit = '';
   Object.keys(SYNC_UNITS).forEach(function (k) { if (shift.indexOf(k) === 0) unit = k; });
   if (!unit) throw new Error('這個班別不能自行取消,請聯絡主管');
+  // 上班前 30 分鐘(含)以前都能取消;上班時間取「班別」表,找不到就用排班列上的上班時間
+  var start = '';
+  shiftTypes_().forEach(function (t) { if (t.name === shift) start = String(t.start || ''); });
+  var sm = (start || String(vals[hit][4] || '')).match(/(\d{1,2}):(\d{2})/);
+  if (!sm) throw new Error('這個班沒有上班時間,無法自行取消,請聯絡主管');
+  var deadline = new Date(date + 'T' + ('0' + sm[1]).slice(-2) + ':' + sm[2] + ':00+08:00').getTime() - 30 * 60000;
+  if (Date.now() > deadline) throw new Error('已超過取消時限(上班前 30 分鐘),請聯絡主管');
   writeBackSchedule_(unit, date, shift, u['姓名'], true); // 先清班表(失敗就整個中止,不會半套)
   sh.deleteRow(hit + 2);
   var ss = sheet_(SHEETS.SIGNUP), m = ss.getLastRow();

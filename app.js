@@ -671,9 +671,10 @@
         '<p class="hint">班別:' + types.map(function (t) { return esc(t.name) + (t.start ? '(' + esc(t.start) + '–' + esc(t.end) + ')' : ''); }).join('、') + '。選空白代表清除排班。</p>';
     } else {
       var mine = shifts.filter(function (s) { return s.empId === user.id; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-      var todayStr = fmtDate(new Date());
-      body = '<p class="hint">明天以後的班可以按「取消」,取消後名額會還給別人;當天及過去的班請聯絡主管。</p><div class="card">' + table(['日期', '星期', '班別', '上班', '下班', ''], mine.map(function (s, i) {
-        var btn = s.date > todayStr ? '<button class="sm danger" data-x="' + i + '">取消</button>' : '';
+      body = '<p class="hint">上班前 30 分鐘以前都可以按「取消」,取消後名額會還給別人;超過時限請聯絡主管。</p><div class="card">' + table(['日期', '星期', '班別', '上班', '下班', ''], mine.map(function (s, i) {
+        var stm = String(s.start || '').match(/(\d{1,2}):(\d{2})/);
+        var open = stm && new Date(s.date + 'T' + ('0' + stm[1]).slice(-2) + ':' + stm[2] + ':00+08:00').getTime() - 30 * 60000 > Date.now();
+        var btn = open ? '<button class="sm danger" data-x="' + i + '">取消</button>' : '';
         return '<tr><td>' + esc(s.date) + '</td><td>' + WD[new Date(s.date).getDay()] + '</td><td>' + esc(s.shift) + '</td><td>' + esc(s.start) + '</td><td>' + esc(s.end) + '</td><td>' + btn + '</td></tr>';
       }), '本月尚無排班') + '</div>';
       setTimeout(function () {
