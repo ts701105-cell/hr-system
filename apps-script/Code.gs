@@ -15,7 +15,8 @@ var SHEETS = {
   LOGIN: '登入紀錄',
   SLOT: '名額',
   SIGNUP: '報名',
-  REG: '註冊申請'
+  REG: '註冊申請',
+  CANCEL: '取消紀錄'
 };
 
 var HEADERS = {
@@ -29,6 +30,7 @@ var HEADERS = {
   '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置'],
   '名額': ['日期', '單位', '班別', '需求人數'],
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
+  '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
 
@@ -138,6 +140,7 @@ var ROUTES = {
   'shifts.list': shiftsList_,
   'shifts.save': shiftsSave_,
   'shifts.cancel': shiftsCancelOwn_,
+  'cancel.log': cancelLog_,
   'signup.open': signupOpen_,
   'signup.apply': signupApply_,
   'signup.cancel': signupCancel_,
@@ -838,8 +841,10 @@ function signupCancel_(u, p) {
 /** 員工取消自己的班,上班前 30 分鐘以前都可以(不論是網站報名的,還是本來就排在班表上的):
  *  從雲端硬碟班表清掉名字(寫前備份)、刪除排班、移除對應報名紀錄、尚餘缺額加回 1。p = {date} */
 function shiftsCancelOwn_(u, p) {
-  var date = String(p.date || '');
+  var date = String(p.date || ''), reason = String(p.reason || '').trim();
   if (!validDate_(date)) throw new Error('日期格式錯誤');
+  if (reason.length < 2) throw new Error('請填寫取消原因');
+  if (reason.length > 200) throw new Error('取消原因請在 200 字以內');
   var sh = sheet_(SHEETS.SHIFT), n = sh.getLastRow();
   var vals = n > 1 ? sh.getRange(2, 1, n - 1, 6).getValues() : [], hit = -1;
   vals.forEach(function (r, i) { if (dstr_(r[0]) === date && String(r[1]) === String(u['員編'])) hit = i; });
@@ -864,7 +869,16 @@ function shiftsCancelOwn_(u, p) {
     }
   }
   slotAdjust_(date, unit, shift, 1);
+  sheet_(SHEETS.CANCEL).appendRow([now_(), date, u['員編'], u['姓名'], unit, shift, reason]); // 留下取消原因供人資查詢
   return true;
+}
+
+/** 管理員:取消紀錄(含原因)。p = {month} */
+function cancelLog_(u, p) {
+  requireAdmin_(u);
+  var month = String(p.month || '');
+  return readObjs_(SHEETS.CANCEL).filter(function (r) { return !month || String(r['日期']).slice(0, 7) === month; })
+    .map(function (r) { return { time: r['時間'], date: r['日期'], empId: r['員編'], name: r['姓名'], unit: r['單位'], shift: r['班別'], reason: r['原因'] }; }).reverse();
 }
 
 /** 主管/管理員:報名名單(管理員看全部,主管只看直屬部屬)。p = {month, unit} */
@@ -1449,13 +1463,14 @@ function registerPurge_(u, p) {
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
     sh.getRange('A:B').setNumberFormat('@');
     if (name === SHEETS.SLOT || name === SHEETS.SIGNUP) sh.getRange('A:A').setNumberFormat('@');
-    if (name === SHEETS.REG) sh.getRange('A:F').setNumberFormat('@'); // 日期維持文字,避免被轉成日期格式
+    if (name === SHEETS.REG) sh.getRange('A:F').setNumberFormat('@');
+    if (name === SHEETS.CANCEL) sh.getRange('A:C').setNumberFormat('@'); // 日期維持文字,避免被轉成日期格式
   }
   if (!sh) throw new Error('缺少工作表「' + name + '」,請先執行 setup()');
   return sh;

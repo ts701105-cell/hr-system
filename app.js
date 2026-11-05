@@ -325,6 +325,18 @@
     };
   }
 
+  /* ---------- 取消紀錄(管理員) ---------- */
+  async function viewCancelLog(main) {
+    var month = (viewCancelLog.month = viewCancelLog.month || curMonth());
+    var list = await call('cancel.log', { month: month });
+    main.innerHTML = '<div class="row"><h2 style="margin:0">取消紀錄</h2><div class="spacer"></div><input type="month" id="mon" value="' + esc(month) + '" style="width:auto"></div>' +
+      '<p class="hint">員工自行取消班別時填寫的原因。月份依「班的日期」篩選。</p><div class="card">' +
+      table(['取消時間', '班的日期', '員工', '單位', '班別', '原因'], list.map(function (r) {
+        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.date) + '</td><td>' + esc(r.name) + '(' + esc(r.empId) + ')</td><td>' + esc(r.unit) + '</td><td>' + esc(r.shift) + '</td><td>' + esc(r.reason) + '</td></tr>';
+      }), '這個月沒有取消紀錄') + '</div>';
+    $('#mon').onchange = function () { if (this.value) { viewCancelLog.month = this.value; viewCancelLog(main).catch(function (e) { toast(e.message, true); }); } };
+  }
+
   /* ---------- 註冊審核(管理員) ---------- */
   async function viewRegister(main) {
     var st = viewRegister.st == null ? '待審核' : viewRegister.st;
@@ -391,6 +403,7 @@
     { path: 'employees', label: '員工資料', roles: ['admin'], group: '管理', view: viewEmployees },
     { path: 'register', label: '註冊審核', roles: ['admin'], group: '管理', view: viewRegister },
     { path: 'locations', label: '打卡地點', roles: ['admin'], group: '管理', view: viewLocations },
+    { path: 'cancellog', label: '取消紀錄', roles: ['admin'], group: '管理', view: viewCancelLog },
     { path: 'loginlog', label: '登入紀錄', roles: ['admin'], group: '管理', view: viewLoginLog },
     { path: 'password', label: '帳號安全', roles: ['employee', 'manager', 'admin'], group: '帳號', view: viewPassword }
   ];
@@ -671,7 +684,7 @@
         '<p class="hint">班別:' + types.map(function (t) { return esc(t.name) + (t.start ? '(' + esc(t.start) + '–' + esc(t.end) + ')' : ''); }).join('、') + '。選空白代表清除排班。</p>';
     } else {
       var mine = shifts.filter(function (s) { return s.empId === user.id; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-      body = '<p class="hint">上班前 30 分鐘以前都可以按「取消」,取消後名額會還給別人;超過時限請聯絡主管。</p><div class="card">' + table(['日期', '星期', '班別', '上班', '下班', ''], mine.map(function (s, i) {
+      body = '<p class="hint">上班前 30 分鐘以前都可以按「取消」,取消時必須填寫原因,取消後名額會還給別人;超過時限請聯絡主管。</p><div class="card">' + table(['日期', '星期', '班別', '上班', '下班', ''], mine.map(function (s, i) {
         var stm = String(s.start || '').match(/(\d{1,2}):(\d{2})/);
         var open = stm && new Date(s.date + 'T' + ('0' + stm[1]).slice(-2) + ':' + stm[2] + ':00+08:00').getTime() - 30 * 60000 > Date.now();
         var btn = open ? '<button class="sm danger" data-x="' + i + '">取消</button>' : '';
@@ -681,8 +694,10 @@
         document.querySelectorAll('[data-x]').forEach(function (b) {
           b.onclick = function () {
             var s = mine[+b.dataset.x];
-            if (!confirm('確定取消 ' + s.date + ' 的「' + s.shift + '」?取消後班表上的名字會一併移除。')) return;
-            guard(async function () { await call('shifts.cancel', { date: s.date }); toast('已取消'); viewSchedule(main).catch(function (e) { toast(e.message, true); }); }, b);
+            var reason = prompt('取消 ' + s.date + ' 的「' + s.shift + '」,班表上的名字會一併移除。\n請填寫取消原因(必填):');
+            if (reason == null) return;
+            if (reason.trim().length < 2) return toast('請填寫取消原因', true);
+            guard(async function () { await call('shifts.cancel', { date: s.date, reason: reason.trim() }); toast('已取消'); viewSchedule(main).catch(function (e) { toast(e.message, true); }); }, b);
           };
         });
       }, 0);
