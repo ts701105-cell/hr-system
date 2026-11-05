@@ -260,6 +260,7 @@ function hash_(pwd) {
 }
 
 function changePassword_(u, p) {
+  if (u['角色'] === 'employee') throw new Error('員工不能自行修改密碼,請聯絡人資重設');
   var np = String(p.newPassword || '');
   if (np.length < 8) throw new Error('新密碼至少 8 碼');
   if (u['密碼雜湊'] !== hash_(String(p.oldPassword || ''))) throw new Error('舊密碼不正確');

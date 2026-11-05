@@ -233,7 +233,7 @@
       '<form id="lf" class="form" style="grid-template-columns:1fr">' + field('li', '帳號(姓名)', '', 'text', 'autocomplete="username" required') +
       field('lp', '密碼', '', 'password', 'autocomplete="current-password" required') +
       '<button class="primary" type="submit">登入</button></form>' +
-      '<p class="hint"><b>帳號</b>:您的姓名。<b>初始密碼</b>:民國出生年月日共 7 碼(年 3 碼 + 月 2 碼 + 日 2 碼),例如民國 73 年 5 月 18 日請輸入 <b>0730518</b>。登入後請到「修改密碼」改成自己的密碼。</p>' +
+      '<p class="hint"><b>帳號</b>:您的姓名。<b>初始密碼</b>:民國出生年月日共 7 碼(年 3 碼 + 月 2 碼 + 日 2 碼),例如民國 73 年 5 月 18 日請輸入 <b>0730518</b>。如忘記密碼請聯絡人資重設。</p>' +
       '<p class="hint"><b>新人?</b> <a href="#" id="goreg">新人註冊(上傳證件)</a> ｜ <a href="#" id="gostat">查詢審核進度</a></p>' +
       '<p class="hint" id="myip">正在取得您的 IP…</p><p class="hint">登入時系統會記錄時間與 IP 位址,供安全稽核使用。</p>' +
       (API.demo ? '<p class="hint">示範帳號:管理員 A001 / admin1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
@@ -392,7 +392,7 @@
     { path: 'register', label: '註冊審核', roles: ['admin'], group: '管理', view: viewRegister },
     { path: 'locations', label: '打卡地點', roles: ['admin'], group: '管理', view: viewLocations },
     { path: 'loginlog', label: '登入紀錄', roles: ['admin'], group: '管理', view: viewLoginLog },
-    { path: 'password', label: '修改密碼', roles: ['employee', 'manager', 'admin'], group: '帳號', view: viewPassword }
+    { path: 'password', label: '帳號安全', roles: ['employee', 'manager', 'admin'], group: '帳號', view: viewPassword }
   ];
 
   function renderShell() {
@@ -1108,11 +1108,14 @@
 
   /* ---------- 修改密碼 ---------- */
   async function viewPassword(main) {
-    main.innerHTML = '<h2>修改密碼</h2><div class="card" style="max-width:420px"><form id="pf" class="form" style="grid-template-columns:1fr">' +
+    var locked = user.role === 'employee'; // 員工不能自行改密碼,由人資重設
+    main.innerHTML = '<h2>' + (locked ? '帳號安全' : '修改密碼') + '</h2>' + (locked
+      ? '<div class="card"><p class="hint" style="margin:0">員工帳號的密碼由人資統一管理,無法自行修改。如需變更或忘記密碼,請聯絡人資重設。</p></div>'
+      : '<div class="card" style="max-width:420px"><form id="pf" class="form" style="grid-template-columns:1fr">' +
       field('p0', '目前密碼', '', 'password', 'autocomplete="current-password" required') + field('p1', '新密碼(至少 8 碼)', '', 'password', 'autocomplete="new-password" minlength="8" required') +
-      field('p2', '再輸入一次新密碼', '', 'password', 'autocomplete="new-password" required') + '<button class="primary" type="submit">更新密碼</button></form></div>' +
-      '<div class="card"><h3>我的近期登入紀錄</h3><p class="hint">若看到不是您本人的登入(陌生 IP 或時間),請立即修改密碼並通知人資。</p><div id="mylog" class="muted">載入中…</div></div>';
-    $('#pf').onsubmit = function (e) {
+      field('p2', '再輸入一次新密碼', '', 'password', 'autocomplete="new-password" required') + '<button class="primary" type="submit">更新密碼</button></form></div>') +
+      '<div class="card"><h3>我的近期登入紀錄</h3><p class="hint">若看到不是您本人的登入(陌生 IP 或時間),請' + (locked ? '' : '立即修改密碼並') + '通知人資。</p><div id="mylog" class="muted">載入中…</div></div>';
+    if (!locked) $('#pf').onsubmit = function (e) {
       e.preventDefault();
       if (val('p1') !== val('p2')) return toast('兩次輸入的新密碼不一致', true);
       guard(async function () { await call('changePassword', { oldPassword: val('p0'), newPassword: val('p1') }); toast('密碼已更新'); $('#pf').reset(); }, $('#pf button'));
