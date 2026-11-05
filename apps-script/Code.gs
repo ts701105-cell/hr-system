@@ -861,7 +861,7 @@ function signupQuotaSave_(u, p) {
 
 /* ============ 從 Google 雲端硬碟班表同步 ============ */
 /* 讀取雲端硬碟資料夾裡的「寶雅班表.xlsx」「鷹世服班表.xlsx」(班表是 Excel),把指定月份的
- * 已排班別與「需求/預計支援人數」寫進「排班」「名額」。單向:Drive → 系統,不會改動 Drive 檔案。
+ * 已排班別與「需求/預計支援人數」寫進「排班」「名額」。單向:Drive → 系統,不會改動 Drive 檔案。名額 = 缺額(需求人數 − 已排人數),缺額為 0 的班不開放報名。
  * 需求:Apps Script 啟用進階服務 Drive(appsscript.json 已宣告)、部署者對該資料夾有讀取權限。
  * 另可在 Apps Script 手動建立時間驅動觸發程序,每天執行 syncDriveDaily() 自動同步本月。 */
 
@@ -934,9 +934,10 @@ function syncDriveUnit_(unit, month) {
   return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched) };
 }
 
-/** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列 */
+/** 解析班表分頁:每週一組「日期」列,下面是各班別的人名列,最後是需求/預計支援人數列。
+ *  名額 = 缺額 = 需求人數 − 已排人數(同一天同一類班別,最少 0);缺額 0 的班不開放報名。 */
 function parseScheduleRows_(rows, tz, shiftOf) {
-  var shifts = [], demand = {}, dates = null;
+  var shifts = [], demand = {}, assigned = {}, dates = null;
   function ds(v) {
     if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
     var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -949,25 +950,35 @@ function parseScheduleRows_(rows, tz, shiftOf) {
     if (!dates || label === '星期') return;
     var m = label.match(/^(早|中|晚|夜)\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}$/);
     if (m) {
+      var kind0 = m[1] === '夜' || m[1] === '晚' ? '夜' : '早';
       for (var c = 1; c < r.length; c++) {
         var d = dates[c - 1], cell = r[c];
         if (!d || cell === '' || cell == null) continue;
         var name = String(cell).trim().replace(/[\(（][^\)）]*[\)）]?$/, '').replace(/\d+$/, '').trim();
         if (!name || /^[0-9.\-X×]+$/.test(name)) continue;
         shifts.push({ date: d, name: name, shift: shiftOf(label) });
+        var ak = d + '|' + kind0 + '|' + name;
+        if (!assigned[ak]) assigned[ak] = true;
       }
       return;
     }
     var dm = label.match(/^(早|中|晚|夜)班(需求|預計)支援人數/);
     if (dm) {
-      var kind = dm[1] === '晚' ? '夜' : dm[1];
+      var kind = dm[1] === '晚' || dm[1] === '夜' ? '夜' : '早';
       for (var c2 = 1; c2 < r.length; c2++) {
         var d2 = dates[c2 - 1], n = Number(r[c2]);
-        if (d2 && n > 0) demand[d2 + '|' + kind] = { date: d2, kind: kind, quota: Math.floor(n), shift: shiftOf(kind === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') };
+        if (d2 && n > 0) demand[d2 + '|' + kind] = { date: d2, kind: kind, need: Math.floor(n) };
       }
     }
   });
-  return { shifts: shifts, slots: Object.keys(demand).map(function (k) { return demand[k]; }) };
+  var count = {};
+  Object.keys(assigned).forEach(function (k) { var p = k.split('|'); var kk = p[0] + '|' + p[1]; count[kk] = (count[kk] || 0) + 1; });
+  var slots = [];
+  Object.keys(demand).forEach(function (k) {
+    var dd = demand[k], open = dd.need - (count[k] || 0);
+    if (open > 0) slots.push({ date: dd.date, kind: dd.kind, need: dd.need, assigned: count[k] || 0, quota: open, shift: shiftOf(dd.kind === '夜' ? '夜 20:00-5:00' : '早 9:00-18:00') });
+  });
+  return { shifts: shifts, slots: slots };
 }
 
 /* ============ 共用工具 ============ */
