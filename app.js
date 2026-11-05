@@ -32,7 +32,7 @@
     finally { if (btn) btn.disabled = false; }
   }
   function badge(status) {
-    var cls = { '核准': 'ok', '成功': 'ok', '已錄取': 'ok', '已報名': 'warn', '待簽核': 'warn', '駁回': 'bad', '超出範圍': 'bad', '撤回': '' }[status] || '';
+    var cls = { '核准': 'ok', '成功': 'ok', '已錄取': 'ok', '已通過': 'ok', '已報名': 'warn', '待簽核': 'warn', '待審核': 'warn', '已退件': 'bad', '駁回': 'bad', '超出範圍': 'bad', '撤回': '' }[status] || '';
     return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
   }
   function table(head, rows, empty) {
@@ -234,9 +234,12 @@
       field('lp', '密碼', '', 'password', 'autocomplete="current-password" required') +
       '<button class="primary" type="submit">登入</button></form>' +
       '<p class="hint"><b>帳號</b>:您的姓名。<b>初始密碼</b>:民國出生年月日共 7 碼(年 3 碼 + 月 2 碼 + 日 2 碼),例如民國 73 年 5 月 18 日請輸入 <b>0730518</b>。登入後請到「修改密碼」改成自己的密碼。</p>' +
+      '<p class="hint"><b>新人?</b> <a href="#" id="goreg">新人註冊(上傳證件)</a> ｜ <a href="#" id="gostat">查詢審核進度</a></p>' +
       '<p class="hint" id="myip">正在取得您的 IP…</p><p class="hint">登入時系統會記錄時間與 IP 位址,供安全稽核使用。</p>' +
       (API.demo ? '<p class="hint">示範帳號:管理員 A001 / admin1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
     getIP().then(function (ip) { var el = document.getElementById('myip'); if (el) el.textContent = ip ? '您目前的 IP:' + ip : '無法取得 IP(仍可登入,紀錄會標示為「未知」)'; });
+    $('#goreg').onclick = function (e) { e.preventDefault(); renderRegister(); };
+    $('#gostat').onclick = function (e) { e.preventDefault(); renderRegStatus(); };
     $('#lf').onsubmit = function (e) {
       e.preventDefault();
       guard(async function () {
@@ -251,6 +254,132 @@
     };
   }
 
+  /* ---------- 新人註冊(免登入) ---------- */
+  function readFileB64(file, label) {
+    return new Promise(function (resolve, reject) {
+      if (!file) return reject(new Error('請上傳「' + label + '」'));
+      if (file.type === 'application/pdf') {
+        if (file.size > 4 * 1024 * 1024) return reject(new Error(label + ' PDF 太大(上限 4MB)'));
+        var fr = new FileReader();
+        fr.onload = function () { resolve(String(fr.result).split(',')[1]); };
+        fr.onerror = function () { reject(new Error(label + ' 讀取失敗')); };
+        return fr.readAsDataURL(file);
+      }
+      if (!/^image\//.test(file.type)) return reject(new Error(label + ' 只接受圖片或 PDF'));
+      var img = new Image(), url = URL.createObjectURL(file);
+      img.onload = function () { // 縮圖壓成 JPEG,手機原圖動輒 5MB 以上
+        var max = 1800, k = Math.min(1, max / Math.max(img.width, img.height));
+        var cv = document.createElement('canvas'); cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        URL.revokeObjectURL(url);
+        resolve(cv.toDataURL('image/jpeg', 0.85).split(',')[1]);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error(label + ' 無法讀取,請改用 JPG / PNG / PDF')); };
+      img.src = url;
+    });
+  }
+
+  function renderRegister() {
+    var units = ['寶雅', '鷹世服'];
+    app.innerHTML = '<div class="login card" style="max-width:520px"><h1>新人註冊</h1>' +
+      '<p class="hint">送出後由人資審核,通過才會開通帳號。審核通過後帳號是您的<b>姓名</b>、初始密碼是<b>民國出生年月日 7 碼</b>。</p>' +
+      '<form id="rf" class="form" style="grid-template-columns:1fr">' +
+      field('rn', '姓名', '', 'text', 'required maxlength="20"') + field('rid', '身分證字號', '', 'text', 'required maxlength="10" autocomplete="off" style="text-transform:uppercase"') +
+      field('rb', '出生日期', '', 'date', 'required') + field('rp', '手機號碼', '', 'tel', 'required maxlength="10" placeholder="09xxxxxxxx"') +
+      field('re', 'Email', '', 'email', 'required') +
+      '<div><label for="ru">申請單位</label><select id="ru" required><option value="">請選擇</option>' + units.map(function (u) { return '<option>' + u + '</option>'; }).join('') + '</select></div>' +
+      '<div><label for="f1">身分證正面(圖片或 PDF)</label><input id="f1" type="file" accept="image/*,application/pdf" required></div>' +
+      '<div><label for="f2">身分證反面(圖片或 PDF)</label><input id="f2" type="file" accept="image/*,application/pdf" required></div>' +
+      '<div><label for="f3">郵局或國泰世華銀行存摺封面(圖片或 PDF)</label><input id="f3" type="file" accept="image/*,application/pdf" required></div>' +
+      '<label style="display:flex;gap:8px;align-items:flex-start"><input id="rc" type="checkbox" style="width:auto;margin-top:4px"><span class="hint" style="margin:0">我已閱讀並同意:所填資料與證件僅供東慧公司辦理人員報到、勞健保加退保及薪資轉帳使用,由人資專人保管,不會公開;審核完成後證件檔案會刪除。</span></label>' +
+      '<button class="primary" type="submit">送出申請</button></form>' +
+      '<p class="hint"><a href="#" id="rback">← 回登入</a></p></div>';
+    $('#rback').onclick = function (e) { e.preventDefault(); renderLogin(); };
+    $('#rf').onsubmit = function (e) {
+      e.preventDefault();
+      guard(async function () {
+        var files = {};
+        files.front = { data: await readFileB64($('#f1').files[0], '身分證正面') };
+        files.back = { data: await readFileB64($('#f2').files[0], '身分證反面') };
+        files.bank = { data: await readFileB64($('#f3').files[0], '存摺封面') };
+        var r = await API.call('register.submit', { name: val('rn').trim(), idNo: val('rid').trim(), birthday: val('rb'), phone: val('rp').trim(), email: val('re').trim(), unit: val('ru'), consent: $('#rc').checked, files: files });
+        app.innerHTML = '<div class="login card"><h1>已送出申請</h1><p>申請編號:<b>' + esc(r.appId) + '</b></p><p class="hint">人資審核通過後,即可用「姓名」+「民國出生年月日 7 碼」登入。可隨時在登入頁用身分證字號與生日「查詢審核進度」。</p><button class="primary" id="rdone">回登入頁</button></div>';
+        $('#rdone').onclick = renderLogin;
+      }, $('#rf button'));
+    };
+  }
+
+  function renderRegStatus() {
+    app.innerHTML = '<div class="login card"><h1>查詢審核進度</h1><form id="sf" class="form" style="grid-template-columns:1fr">' +
+      field('si', '身分證字號', '', 'text', 'required maxlength="10" style="text-transform:uppercase"') + field('sb', '出生日期', '', 'date', 'required') +
+      '<button class="primary" type="submit">查詢</button></form><div id="sres"></div><p class="hint"><a href="#" id="sback">← 回登入</a></p></div>';
+    $('#sback').onclick = function (e) { e.preventDefault(); renderLogin(); };
+    $('#sf').onsubmit = function (e) {
+      e.preventDefault();
+      guard(async function () {
+        var r = await API.call('register.status', { idNo: val('si').trim(), birthday: val('sb') });
+        $('#sres').innerHTML = '<p>申請編號:' + esc(r.appId) + '(' + esc(r.time) + ')</p><p>狀態:' + badge(r.status) + '</p>' +
+          (r.status === '已退件' ? '<p class="hint">退件原因:' + esc(r.note) + '。如需重新申請,請修正後再送出。</p>' : '') +
+          (r.status === '已通過' ? '<p class="hint">已開通!帳號是您的姓名,初始密碼是民國出生年月日 7 碼。</p>' : '');
+      }, $('#sf button'));
+    };
+  }
+
+  /* ---------- 註冊審核(管理員) ---------- */
+  async function viewRegister(main) {
+    var st = viewRegister.st == null ? '待審核' : viewRegister.st;
+    var list = await call('register.list', { status: st });
+    main.innerHTML = '<div class="row"><h2 style="margin:0">註冊審核</h2><div class="spacer"></div><select id="rst" style="width:auto">' +
+      ['待審核', '已通過', '已退件', ''].map(function (x) { return '<option value="' + x + '"' + (x === st ? ' selected' : '') + '>' + (x || '全部') + '</option>'; }).join('') + '</select></div>' +
+      '<p class="hint">新人在登入頁送出申請後會出現在這裡。請核對證件與填寫資料,通過時填入員編,系統會自動建立帳號(帳號=姓名、密碼=民國生日 7 碼)。</p>' +
+      '<div class="card">' + table(['申請時間', '姓名', '單位', '電話', '狀態', ''], list.map(function (r, i) {
+        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.phone) + '</td><td>' + badge(r.status) + '</td><td><button class="sm primary" data-v="' + i + '">檢視</button></td></tr>';
+      }), '沒有申請') + '</div>';
+    $('#rst').onchange = function () { viewRegister.st = this.value; viewRegister(main).catch(function (e) { toast(e.message, true); }); };
+    document.querySelectorAll('[data-v]').forEach(function (b) {
+      b.onclick = function () { regDetail(list[+b.dataset.v], function () { viewRegister(main).catch(function (e) { toast(e.message, true); }); }); };
+    });
+  }
+
+  function regDetail(r, done) {
+    var pend = r.status === '待審核';
+    openDialog('<h3>' + esc(r.name) + ' · ' + esc(r.unit) + ' ' + badge(r.status) + '</h3>' +
+      '<p class="muted">申請編號 ' + esc(r.appId) + '(' + esc(r.time) + ')<br>身分證字號:<b>' + esc(r.idNo) + '</b>　生日:' + esc(r.birthday) + '<br>電話:' + esc(r.phone) + '　Email:' + esc(r.email) +
+      (r.reviewer ? '<br>審核:' + esc(r.reviewer) + '(' + esc(r.reviewTime) + ')' + (r.empId ? ',員編 ' + esc(r.empId) : '') + (r.note ? ',原因:' + esc(r.note) : '') : '') + '</p>' +
+      (r.hasFiles ? '<div class="row"><button class="sm" data-k="front">身分證正面</button><button class="sm" data-k="back">身分證反面</button><button class="sm" data-k="bank">存摺封面</button></div><div id="rprev" style="margin:10px 0;text-align:center"></div>' : '<p class="hint">證件檔案已刪除。</p>') +
+      (pend ? '<div class="form"><div><label>員編(通過時必填)</label><input id="aemp" placeholder="例如 164958"></div><div><label>退件原因(退件時必填)</label><input id="arsn"></div></div>' +
+        '<div class="row"><button class="primary" id="aok">通過並建立帳號</button><button class="danger" id="ano">退件</button><button data-close>關閉</button></div>'
+        : '<div class="row">' + (r.hasFiles ? '<button class="danger" id="apurge">刪除證件檔案</button>' : '') + '<button data-close>關閉</button></div>'));
+    document.querySelectorAll('[data-k]').forEach(function (b) {
+      b.onclick = function () {
+        guard(async function () {
+          $('#rprev').textContent = '載入中…';
+          var f = await call('register.file', { appId: r.appId, key: b.dataset.k });
+          var src = 'data:' + f.mime + ';base64,' + f.data;
+          $('#rprev').innerHTML = f.mime === 'application/pdf' ? '<iframe src="' + src + '" style="width:100%;height:480px;border:1px solid var(--line)"></iframe>' : '<img src="' + src + '" alt="' + esc(f.label) + '" style="max-width:100%;max-height:480px">';
+        }, b);
+      };
+    });
+    if (pend) {
+      $('#aok').onclick = function () {
+        guard(async function () {
+          var x = await call('register.approve', { appId: r.appId, empId: val('aemp').trim() });
+          dlg.close();
+          alert('已通過並建立帳號\n帳號:' + x.account + '(員編 ' + x.empId + ')\n初始密碼:' + x.password + '(民國生日)' + (x.sameName > 1 ? '\n\n注意:系統裡有 ' + x.sameName + ' 位同名員工,這位新人登入時請改用員編。' : ''));
+          done();
+        }, $('#aok'));
+      };
+      $('#ano').onclick = function () {
+        guard(async function () { await call('register.reject', { appId: r.appId, reason: val('arsn').trim() }); dlg.close(); toast('已退件'); done(); }, $('#ano'));
+      };
+    } else if (r.hasFiles) {
+      $('#apurge').onclick = function () {
+        if (!confirm('確定刪除這份申請的身分證與存摺檔案?(移到雲端硬碟垃圾桶)')) return;
+        guard(async function () { await call('register.purge', { appId: r.appId }); dlg.close(); toast('已刪除證件檔案'); done(); }, $('#apurge'));
+      };
+    }
+  }
+
   /* ---------- 外框與路由 ---------- */
   var ROUTES = [
     { path: 'punch', label: '打卡', roles: ['employee', 'manager', 'admin'], view: viewPunch },
@@ -260,6 +389,7 @@
     { path: 'approvals', label: '假單簽核', roles: ['manager', 'admin'], group: '主管', view: viewApprovals },
     { path: 'attendance', label: '出勤報表', roles: ['manager', 'admin'], group: '主管', view: viewAttendance },
     { path: 'employees', label: '員工資料', roles: ['admin'], group: '管理', view: viewEmployees },
+    { path: 'register', label: '註冊審核', roles: ['admin'], group: '管理', view: viewRegister },
     { path: 'locations', label: '打卡地點', roles: ['admin'], group: '管理', view: viewLocations },
     { path: 'loginlog', label: '登入紀錄', roles: ['admin'], group: '管理', view: viewLoginLog },
     { path: 'password', label: '修改密碼', roles: ['employee', 'manager', 'admin'], group: '帳號', view: viewPassword }

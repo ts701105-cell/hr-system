@@ -354,6 +354,7 @@
       setToken('demo:' + e.id);
       return { token: 'demo:' + e.id, user: pub(e), mustChange: false, lastLogin: last ? { time: last.time, ip: last.ip } : null, ip: ip };
     }
+    if (/^register\./.test(action)) throw new Error('示範模式不支援新人註冊(需連線正式後端)');
     var u = me(db);
     var h = demoRoutes[action];
     if (!h) throw new Error('未知的操作: ' + action);

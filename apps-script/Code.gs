@@ -14,7 +14,8 @@ var SHEETS = {
   SHIFT_TYPE: '班別',
   LOGIN: '登入紀錄',
   SLOT: '名額',
-  SIGNUP: '報名'
+  SIGNUP: '報名',
+  REG: '註冊申請'
 };
 
 var HEADERS = {
@@ -27,7 +28,8 @@ var HEADERS = {
   '班別': ['班別', '上班', '下班', '單位'],
   '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置'],
   '名額': ['日期', '單位', '班別', '需求人數'],
-  '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間']
+  '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
+  '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
 
 var TOKEN_TTL = 6 * 60 * 60; // 秒
@@ -88,6 +90,10 @@ function doPost(e) {
     var action = req.action;
     var p = req.params || {};
     if (action === 'login') return json_(login_(p));
+    if (action === 'register.submit' || action === 'register.status') { // 新人註冊:不需登入
+      lock.waitLock(20000);
+      return json_({ ok: true, data: action === 'register.submit' ? registerSubmit_(p) : registerStatus_(p) });
+    }
 
     var user = auth_(req.token);
     if (!user) return json_({ ok: false, error: '登入已逾時,請重新登入', code: 'AUTH' });
@@ -137,6 +143,11 @@ var ROUTES = {
   'signup.list': signupList_,
   'signup.confirm': signupConfirm_,
   'signup.quota.save': signupQuotaSave_,
+  'register.list': registerList_,
+  'register.file': registerFile_,
+  'register.approve': registerApprove_,
+  'register.reject': registerReject_,
+  'register.purge': registerPurge_,
   'sync.drive': syncDriveRoute_,
   'qr.token': qrToken,
   'login.log': loginLog_,
@@ -1222,17 +1233,184 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   return plan.ref;
 }
 
+/* ============ 新人註冊(上傳證件 → 管理員審核 → 建立帳號) ============ */
+
+var REG_FOLDER = '人事註冊證件';
+var REG_FILES = { front: { col: 8, label: '身分證正面' }, back: { col: 9, label: '身分證反面' }, bank: { col: 10, label: '存摺封面' } };
+
+/** 證件放在擁有者「我的雲端硬碟」根目錄的私人資料夾,不分享、不公開 */
+function regFolder_() {
+  var it = DriveApp.getRootFolder().getFoldersByName(REG_FOLDER);
+  return it.hasNext() ? it.next() : DriveApp.getRootFolder().createFolder(REG_FOLDER);
+}
+
+function validTwId_(s) {
+  if (!/^[A-Z][12]\d{8}$/.test(s)) return /^[A-Z][A-D89]\d{8}$/.test(s); // 居留證新舊格式只驗格式
+  var map = { A: 10, B: 11, C: 12, D: 13, E: 14, F: 15, G: 16, H: 17, I: 34, J: 18, K: 19, L: 20, M: 21, N: 22, O: 35, P: 23, Q: 24, R: 25, S: 26, T: 27, U: 28, V: 29, W: 32, X: 30, Y: 31, Z: 33 };
+  var v = map[s.charAt(0)], sum = Math.floor(v / 10) + (v % 10) * 9;
+  for (var i = 1; i <= 8; i++) sum += Number(s.charAt(i)) * (9 - i);
+  return (sum + Number(s.charAt(9))) % 10 === 0;
+}
+
+function rocPwd_(iso) { // 1990-05-18 → 0790518
+  var m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return ('00' + (Number(m[1]) - 1911)).slice(-3) + m[2] + m[3];
+}
+
+function checkRate_(key, max, ttl) {
+  var cache = CacheService.getScriptCache(), n = Number(cache.get(key) || 0);
+  if (n >= max) throw new Error('操作太頻繁,請稍後再試');
+  cache.put(key, String(n + 1), ttl);
+}
+
+function fileExt_(bytes, mime) {
+  var h = bytes.slice(0, 4).map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
+  if (h.indexOf('ffd8ff') === 0) return { ext: 'jpg', mime: 'image/jpeg' };
+  if (h === '89504e47') return { ext: 'png', mime: 'image/png' };
+  if (h === '25504446') return { ext: 'pdf', mime: 'application/pdf' };
+  return null;
+}
+
+/** 公開:新人送出申請。p = {name, idNo, birthday(yyyy-mm-dd), phone, email, unit, consent, files:{front,back,bank:{data(base64)}}} */
+function registerSubmit_(p) {
+  checkRate_('reg_all', 40, 3600); // 全站每小時最多 40 件,避免被灌爆雲端硬碟
+  var name = String(p.name || '').trim(), idNo = String(p.idNo || '').trim().toUpperCase();
+  var birthday = String(p.birthday || '').trim(), phone = String(p.phone || '').replace(/[-\s]/g, ''), email = String(p.email || '').trim();
+  var unit = String(p.unit || '').trim();
+  if (!p.consent) throw new Error('請先勾選同意個人資料蒐集告知事項');
+  if (!/^[^\d\s]{2,20}$/.test(name)) throw new Error('請輸入正確的姓名');
+  if (!validTwId_(idNo)) throw new Error('身分證字號格式不正確');
+  var bd = birthday.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!bd || isNaN(new Date(birthday).getTime()) || birthday > today_() || Number(bd[1]) < 1920) throw new Error('生日格式不正確');
+  if (!/^09\d{8}$/.test(phone)) throw new Error('手機號碼請輸入 09 開頭共 10 碼');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Email 格式不正確');
+  if (!SYNC_UNITS[unit]) throw new Error('請選擇申請單位');
+
+  var sh = sheet_(SHEETS.REG), n = sh.getLastRow();
+  var rows = n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : [];
+  rows.forEach(function (r) {
+    if (String(r[2]) === idNo && (r[10] === '待審核' || r[10] === '已通過')) throw new Error(r[10] === '待審核' ? '您已送出申請,正在審核中,請用「查詢進度」確認' : '您的申請已通過,請直接登入');
+  });
+  var emps = readObjs_(SHEETS.EMP);
+  if (emps.some(function (e) { return String(e['姓名']).trim() === name && e['密碼雜湊'] === hash_(rocPwd_(birthday)); })) throw new Error('系統已有相同姓名與生日的帳號,請直接登入或聯絡人資');
+
+  var files = p.files || {}, saved = {}, appId = 'R' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMddHHmmss') + Math.floor(100 + Math.random() * 900);
+  var folder = regFolder_(), created = [];
+  try {
+    Object.keys(REG_FILES).forEach(function (k) {
+      var f = files[k];
+      if (!f || !f.data) throw new Error('請上傳「' + REG_FILES[k].label + '」');
+      if (String(f.data).length > 7 * 1024 * 1024) throw new Error(REG_FILES[k].label + '檔案太大(上限約 5MB)');
+      var bytes = Utilities.base64Decode(String(f.data));
+      var t = fileExt_(bytes);
+      if (!t) throw new Error(REG_FILES[k].label + '只接受 JPG、PNG 或 PDF');
+      var file = folder.createFile(Utilities.newBlob(bytes, t.mime, appId + '_' + name + '_' + k + '.' + t.ext));
+      created.push(file);
+      saved[k] = file.getId();
+    });
+  } catch (err) {
+    created.forEach(function (f) { try { f.setTrashed(true); } catch (x) { /* ignore */ } });
+    throw err;
+  }
+  sh.appendRow([appId, name, idNo, birthday, phone, email, unit, saved.front, saved.back, saved.bank, '待審核', now_(), '', '', '', '']);
+  return { appId: appId };
+}
+
+/** 公開:用身分證字號 + 生日查詢審核進度(連續查錯會被限制) */
+function registerStatus_(p) {
+  var idNo = String(p.idNo || '').trim().toUpperCase(), birthday = String(p.birthday || '').trim();
+  checkRate_('regq_' + idNo, 8, 900);
+  var sh = sheet_(SHEETS.REG), n = sh.getLastRow(), hit = null;
+  (n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : []).forEach(function (r) { if (String(r[2]) === idNo && String(r[3]) === birthday) hit = r; });
+  if (!hit) throw new Error('查無申請資料,請確認身分證字號與生日');
+  return { appId: hit[0], status: hit[10], time: hit[11], note: hit[10] === '已退件' ? hit[14] : '' };
+}
+
+function regRows_() {
+  var sh = sheet_(SHEETS.REG), n = sh.getLastRow();
+  return { sh: sh, rows: n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : [] };
+}
+
+function regFind_(appId) {
+  var g = regRows_(), i;
+  for (i = 0; i < g.rows.length; i++) if (g.rows[i][0] === appId) return { sh: g.sh, row: i + 2, r: g.rows[i] };
+  throw new Error('找不到申請: ' + appId);
+}
+
+/** 管理員:申請清單。p = {status}(空白 = 全部) */
+function registerList_(u, p) {
+  requireAdmin_(u);
+  var st = String(p.status || '');
+  return regRows_().rows.filter(function (r) { return !st || r[10] === st; }).map(function (r) {
+    return { appId: r[0], name: r[1], idNo: r[2], birthday: r[3], phone: r[4], email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
+      hasFiles: !!(r[7] || r[8] || r[9]) };
+  }).reverse();
+}
+
+/** 管理員:取得證件內容供預覽。p = {appId, key: front|back|bank} */
+function registerFile_(u, p) {
+  requireAdmin_(u);
+  var f = REG_FILES[p.key];
+  if (!f) throw new Error('證件類型錯誤');
+  var rec = regFind_(String(p.appId)), id = rec.r[f.col - 1];
+  if (!id) throw new Error('這份證件已刪除');
+  var blob = DriveApp.getFileById(id).getBlob();
+  return { mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()), label: f.label };
+}
+
+/** 管理員:通過並建立帳號(帳號 = 姓名,初始密碼 = 民國生日 7 碼)。p = {appId, empId} */
+function registerApprove_(u, p) {
+  requireAdmin_(u);
+  var empId = String(p.empId || '').trim();
+  if (!empId) throw new Error('請填員編');
+  var rec = regFind_(String(p.appId)), r = rec.r;
+  if (r[10] !== '待審核') throw new Error('這件申請已處理過');
+  if (findEmp_(empId)) throw new Error('員編 ' + empId + ' 已存在');
+  var pwd = rocPwd_(String(r[3]));
+  sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], r[4]]);
+  var same = readObjs_(SHEETS.EMP).filter(function (e) { return String(e['姓名']).trim() === r[1] && e['狀態'] === '在職'; }).length;
+  rec.sh.getRange(rec.row, 11).setValue('已通過');
+  rec.sh.getRange(rec.row, 13, 1, 4).setValues([[u['姓名'], now_(), '', empId]]);
+  return { empId: empId, account: r[1], password: pwd, sameName: same };
+}
+
+/** 管理員:退件(要寫原因)。p = {appId, reason} */
+function registerReject_(u, p) {
+  requireAdmin_(u);
+  var reason = String(p.reason || '').trim();
+  if (!reason) throw new Error('請填退件原因');
+  var rec = regFind_(String(p.appId));
+  if (rec.r[10] !== '待審核') throw new Error('這件申請已處理過');
+  rec.sh.getRange(rec.row, 11).setValue('已退件');
+  rec.sh.getRange(rec.row, 13, 1, 3).setValues([[u['姓名'], now_(), reason]]);
+  return true;
+}
+
+/** 管理員:刪除已處理申請的證件檔(移到雲端硬碟垃圾桶),個資不要留太久。p = {appId} */
+function registerPurge_(u, p) {
+  requireAdmin_(u);
+  var rec = regFind_(String(p.appId));
+  if (rec.r[10] === '待審核') throw new Error('尚未審核的申請不能刪除證件');
+  [8, 9, 10].forEach(function (col) {
+    var id = rec.r[col - 1];
+    if (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* 已不存在 */ } }
+  });
+  rec.sh.getRange(rec.row, 8, 1, 3).setValues([['', '', '']]);
+  return true;
+}
+
 /* ============ 共用工具 ============ */
 
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
     sh.getRange('A:B').setNumberFormat('@');
-    if (name === SHEETS.SLOT || name === SHEETS.SIGNUP) sh.getRange('A:A').setNumberFormat('@'); // 日期維持文字,避免被轉成日期格式
+    if (name === SHEETS.SLOT || name === SHEETS.SIGNUP) sh.getRange('A:A').setNumberFormat('@');
+    if (name === SHEETS.REG) sh.getRange('A:F').setNumberFormat('@'); // 日期維持文字,避免被轉成日期格式
   }
   if (!sh) throw new Error('缺少工作表「' + name + '」,請先執行 setup()');
   return sh;
