@@ -359,7 +359,7 @@
       '<p class="muted">申請編號 ' + esc(r.appId) + '(' + esc(r.time) + ')<br>身分證字號:<b>' + esc(r.idNo) + '</b>　生日:' + esc(r.birthday) + '<br>電話:' + esc(r.phone) + '　Email:' + esc(r.email) +
       (r.reviewer ? '<br>審核:' + esc(r.reviewer) + '(' + esc(r.reviewTime) + ')' + (r.empId ? ',員編 ' + esc(r.empId) : '') + (r.note ? ',原因:' + esc(r.note) : '') : '') + '</p>' +
       (r.hasFiles ? '<div class="row"><button class="sm" data-k="front">身分證正面</button><button class="sm" data-k="back">身分證反面</button><button class="sm" data-k="bank">存摺封面</button></div><div id="rprev" style="margin:10px 0;text-align:center"></div>' : '<p class="hint">證件檔案已刪除。</p>') +
-      (pend ? '<div class="form"><div><label>員編(選填,沒有就留空,系統自動編號)</label><input id="aemp" placeholder="例如 164958"></div><div><label>退件原因(退件時必填)</label><input id="arsn"></div></div>' +
+      (pend ? '<div class="form"><div><label>員編(通過時必填,由管理員輸入)</label><input id="aemp" placeholder="例如 164958"></div><div><label>退件原因(退件時必填)</label><input id="arsn"></div></div>' +
         '<div class="row"><button class="primary" id="aok">通過並建立帳號</button><button class="danger" id="ano">退件</button><button data-close>關閉</button></div>'
         : '<div class="row">' + (r.hasFiles ? '<button class="danger" id="apurge">刪除證件檔案</button>' : '') + '<button data-close>關閉</button></div>'));
     document.querySelectorAll('[data-k]').forEach(function (b) {
