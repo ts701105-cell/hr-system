@@ -1494,13 +1494,21 @@ function registerFile_(u, p) {
   return { mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()), label: f.label };
 }
 
-/** 管理員:通過並建立帳號(帳號 = 姓名,初始密碼 = 民國生日 7 碼)。p = {appId, empId} */
+/** 自動產生員編:N0001、N0002…(新人沒有公司員編時使用,取目前最大號 + 1) */
+function nextAutoEmpId_() {
+  var max = 0;
+  readObjs_(SHEETS.EMP).forEach(function (e) { var m = String(e['員編']).match(/^N(\d{4,})$/); if (m) max = Math.max(max, Number(m[1])); });
+  return 'N' + ('000' + (max + 1)).slice(-4);
+}
+
+/** 管理員:通過並自動建立帳號(帳號 = 姓名,初始密碼 = 民國生日 7 碼)。員編可不填,不填就自動編號。p = {appId, empId?} */
 function registerApprove_(u, p) {
   requireAdmin_(u);
   var empId = String(p.empId || '').trim();
-  if (!empId) throw new Error('請填員編');
+  if (empId && !/^[A-Za-z0-9_-]{1,20}$/.test(empId)) throw new Error('員編只能是英數字、底線、連字號(最多 20 碼)');
   var rec = regFind_(String(p.appId)), r = rec.r;
   if (r[10] !== '待審核') throw new Error('這件申請已處理過');
+  if (!empId) empId = nextAutoEmpId_();
   if (findEmp_(empId)) throw new Error('員編 ' + empId + ' 已存在');
   var pwd = rocPwd_(String(r[3]));
   sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], r[4]]);
