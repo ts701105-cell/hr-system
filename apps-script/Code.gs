@@ -1505,7 +1505,8 @@ function registerApprove_(u, p) {
   if (findEmp_(empId)) throw new Error('員編 ' + empId + ' 已存在');
   var pwd = rocPwd_(String(r[3]));
   sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], r[4]]);
-  var same = readObjs_(SHEETS.EMP).filter(function (e) { return String(e['姓名']).trim() === r[1] && e['狀態'] === '在職'; }).length;
+  var hh = hash_(pwd); // 同名在職、且密碼也完全相同(生日相同)才無法用姓名分辨,才需要提醒
+  var same = readObjs_(SHEETS.EMP).filter(function (e) { return String(e['姓名']).trim() === r[1] && e['狀態'] === '在職' && e['密碼雜湊'] === hh; }).length;
   rec.sh.getRange(rec.row, 11).setValue('已通過');
   rec.sh.getRange(rec.row, 13, 1, 4).setValues([[u['姓名'], now_(), '', empId]]);
   return { empId: empId, account: r[1], password: pwd, sameName: same };

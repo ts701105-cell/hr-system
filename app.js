@@ -377,7 +377,7 @@
         guard(async function () {
           var x = await call('register.approve', { appId: r.appId, empId: val('aemp').trim() });
           dlg.close();
-          alert('已通過並建立帳號\n帳號:' + x.account + '(員編 ' + x.empId + ')\n初始密碼:' + x.password + '(民國生日)' + (x.sameName > 1 ? '\n\n注意:系統裡有 ' + x.sameName + ' 位同名員工,這位新人登入時請改用員編。' : ''));
+          alert('已通過並建立帳號\n帳號:' + x.account + '(員編 ' + x.empId + ')\n初始密碼:' + x.password + '(民國生日)' + (x.sameName > 1 ? '\n\n注意:系統裡有 ' + x.sameName + ' 位同名且生日(密碼)相同的在職員工,無法用姓名分辨,這位新人登入時請改填員編 ' + x.empId + '。' : ''));
           done();
         }, $('#aok'));
       };
