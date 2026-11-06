@@ -17,7 +17,8 @@ var SHEETS = {
   SIGNUP: '報名',
   REG: '註冊申請',
   CANCEL: '取消紀錄',
-  PRIORITY: '優先名單'
+  PRIORITY: '優先名單',
+  MFA: '二階段'
 };
 
 var HEADERS = {
@@ -33,6 +34,7 @@ var HEADERS = {
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
   '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因', '來源', '登入IP', '登入時間'],
   '優先名單': ['姓名', '說明'],
+  '二階段': ['員編', '密鑰', '狀態', '備用碼雜湊', '最後使用週期', '啟用時間'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
 
@@ -95,6 +97,7 @@ function doPost(e) {
     var p = req.params || {};
     if (action === 'login') return json_(login_(p));
     if (action === 'login.pick') return json_(loginPick_(p));
+    if (action === 'login.mfa') return json_(loginMfa_(p));
     if (action === 'register.submit' || action === 'register.status') { // 新人註冊:不需登入
       lock.waitLock(20000);
       return json_({ ok: true, data: action === 'register.submit' ? registerSubmit_(p) : registerStatus_(p) });
@@ -119,6 +122,11 @@ function doPost(e) {
 var ROUTES = {
   'me': function (u) { return publicUser_(u); },
   'changePassword': changePassword_,
+  'mfa.status': mfaStatus_,
+  'mfa.setup': mfaSetup_,
+  'mfa.enable': mfaEnable_,
+  'mfa.disable': mfaDisable_,
+  'mfa.reset': mfaReset_,
   'employees.list': employeesList_,
   'employees.save': employeesSave_,
   'employees.resetPassword': employeesReset_,
@@ -190,6 +198,17 @@ function login_(p) {
     cache.put('pick_' + ticket, JSON.stringify({ ids: cands.map(function (e) { return String(e['員編']); }), ip: ip, ua: ua }), 300);
     return { ok: true, data: { choose: true, ticket: ticket, options: cands.map(function (e) { return { empId: String(e['員編']), dept: String(e['部門'] || '') }; }) } };
   }
+  return afterPassword_(emp, ip, ua);
+}
+
+/** 密碼(與選單位)通過後:有啟用二階段認證就先要驗證碼,否則直接登入 */
+function afterPassword_(emp, ip, ua) {
+  var rec = mfaRec_(String(emp['員編']));
+  if (rec && rec.status === '啟用') {
+    var ticket = Utilities.getUuid() + Utilities.getUuid();
+    CacheService.getScriptCache().put('mfa_' + ticket, JSON.stringify({ id: String(emp['員編']), ip: ip, ua: ua }), 300);
+    return { ok: true, data: { mfa: true, ticket: ticket } };
+  }
   return finishLogin_(emp, ip, ua);
 }
 
@@ -215,7 +234,7 @@ function loginPick_(p) {
   cache.remove(key);
   var emp = findEmp_(empId);
   if (!emp || emp['狀態'] !== '在職') return { ok: false, error: '帳號無法使用' };
-  return finishLogin_(emp, d.ip, d.ua);
+  return afterPassword_(emp, d.ip, d.ua);
 }
 
 /** 登入帳號可輸入「員編」或「姓名」。姓名可能同名,所以在符合的在職員工中找密碼也對的人;
@@ -815,6 +834,164 @@ function slotAdjust_(date, unit, shift, delta) {
 }
 
 /** 該日期所屬那一週(週一開頭)的週一日期,如 2026-11-04 → 2026-11-02 */
+/* ============ 二階段認證(TOTP:手機驗證器 App,每 30 秒換一組 6 位數) ============ */
+
+var B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function b32encode_(bytes) {
+  var out = '', bits = 0, val = 0;
+  for (var i = 0; i < bytes.length; i++) {
+    val = (val << 8) | (bytes[i] & 255); bits += 8;
+    while (bits >= 5) { out += B32.charAt((val >>> (bits - 5)) & 31); bits -= 5; }
+  }
+  if (bits > 0) out += B32.charAt((val << (5 - bits)) & 31);
+  return out;
+}
+
+function b32decode_(str) {
+  var out = [], bits = 0, val = 0;
+  str = String(str).replace(/[\s=]/g, '').toUpperCase();
+  for (var i = 0; i < str.length; i++) {
+    var idx = B32.indexOf(str.charAt(i));
+    if (idx < 0) continue;
+    val = (val << 5) | idx; bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return out;
+}
+
+function toSigned_(arr) { return arr.map(function (b) { b = b & 255; return b > 127 ? b - 256 : b; }); }
+
+/** RFC 6238 / RFC 4226:HMAC-SHA1、30 秒、6 位數 */
+function totpCode_(secretB32, counter) {
+  var msg = [], c = counter;
+  for (var i = 7; i >= 0; i--) { msg[i] = c % 256; c = Math.floor(c / 256); }
+  var sig = Utilities.computeHmacSignature(Utilities.MacAlgorithm.HMAC_SHA_1, toSigned_(msg), toSigned_(b32decode_(secretB32)));
+  var off = sig[19] & 15;
+  var bin = ((sig[off] & 0x7f) * 16777216) + ((sig[off + 1] & 255) << 16) + ((sig[off + 2] & 255) << 8) + (sig[off + 3] & 255);
+  return ('000000' + (bin % 1000000)).slice(-6);
+}
+
+function mfaRec_(empId) {
+  var sh = sheet_(SHEETS.MFA), row = findRow_(sh, 1, empId);
+  if (!row) return null;
+  var v = sh.getRange(row, 1, 1, 6).getValues()[0];
+  return { sh: sh, row: row, secret: String(v[1]), status: String(v[2]), backup: String(v[3] || ''), last: Number(v[4]) || 0 };
+}
+
+/** 驗證 6 位數驗證碼(前後各容許 30 秒誤差),同一組驗證碼不能重複使用;回傳該週期,失敗回傳 -1 */
+function verifyTotp_(secret, code, last) {
+  code = String(code || '').replace(/\s/g, '');
+  if (!/^\d{6}$/.test(code)) return -1;
+  var c = Math.floor(Date.now() / 30000);
+  for (var d = -1; d <= 1; d++) if (totpCode_(secret, c + d) === code && c + d > last) return c + d;
+  return -1;
+}
+
+function newBackupCodes_() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', out = [];
+  for (var i = 0; i < 8; i++) {
+    var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + i), code = '';
+    for (var j = 0; j < 8; j++) code += chars.charAt((raw[j] & 255) % chars.length);
+    out.push(code.slice(0, 4) + '-' + code.slice(4));
+  }
+  return out;
+}
+
+/** 驗證驗證碼或備用碼(備用碼用過就作廢)。失敗 5 次鎖 15 分鐘。 */
+function mfaCheck_(empId, input) {
+  var cache = CacheService.getScriptCache(), key = 'mfafail_' + empId, fails = Number(cache.get(key) || 0);
+  if (fails >= 5) throw new Error('驗證失敗次數過多,請 15 分鐘後再試');
+  var rec = mfaRec_(empId);
+  if (!rec) return false;
+  var ok = false, txt = String(input || '').trim();
+  var per = rec.status === '啟用' || rec.status === '待驗證' ? verifyTotp_(rec.secret, txt, rec.last) : -1;
+  if (per >= 0) { rec.sh.getRange(rec.row, 5).setValue(per); ok = true; }
+  else if (rec.status === '啟用' && /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/.test(txt)) {
+    var h = hash_(txt.replace('-', '').toUpperCase()), list = rec.backup ? rec.backup.split(',') : [], k = list.indexOf(h);
+    if (k >= 0) { list.splice(k, 1); rec.sh.getRange(rec.row, 4).setValue(list.join(',')); ok = true; }
+  }
+  if (ok) cache.remove(key); else cache.put(key, String(fails + 1), 900);
+  return ok;
+}
+
+function mfaStatus_(u) {
+  var rec = mfaRec_(String(u['員編']));
+  var left = rec && rec.backup ? rec.backup.split(',').length : 0;
+  return { allowed: isAdmin_(u), enabled: !!(rec && rec.status === '啟用'), backupLeft: left };
+}
+
+/** 管理員開始設定:產生密鑰(尚未啟用,要輸入一次正確驗證碼才算) */
+function mfaSetup_(u) {
+  requireAdmin_(u);
+  var id = String(u['員編']), rec = mfaRec_(id);
+  if (rec && rec.status === '啟用') throw new Error('已經啟用了,要重新設定請先停用');
+  var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid() + Date.now());
+  var secret = b32encode_(raw.slice(0, 20));
+  var row = [id, secret, '待驗證', '', 0, ''];
+  if (rec) rec.sh.getRange(rec.row, 1, 1, 6).setValues([row]); else sheet_(SHEETS.MFA).appendRow(row);
+  var issuer = '東慧人事管理系統';
+  return { secret: secret, uri: 'otpauth://totp/' + encodeURIComponent(issuer + ':' + u['姓名']) + '?secret=' + secret + '&issuer=' + encodeURIComponent(issuer) + '&algorithm=SHA1&digits=6&period=30' };
+}
+
+/** 輸入手機 App 顯示的驗證碼確認 → 啟用,並一次給 8 組備用碼(只顯示這一次) */
+function mfaEnable_(u, p) {
+  requireAdmin_(u);
+  var id = String(u['員編']), rec = mfaRec_(id);
+  if (!rec || rec.status !== '待驗證') throw new Error('請先按「啟用二階段認證」產生 QR code');
+  if (!mfaCheck_(id, p.code)) throw new Error('驗證碼不正確,請確認手機時間正確後再試');
+  var codes = newBackupCodes_();
+  var hashes = codes.map(function (c) { return hash_(c.replace('-', '')); });
+  rec = mfaRec_(id);
+  rec.sh.getRange(rec.row, 3, 1, 4).setValues([['啟用', hashes.join(','), rec.last, now_()]]);
+  return { codes: codes };
+}
+
+/** 停用自己的二階段認證:要輸入目前的驗證碼或備用碼 */
+function mfaDisable_(u, p) {
+  requireAdmin_(u);
+  var id = String(u['員編']), rec = mfaRec_(id);
+  if (!rec) return true;
+  if (rec.status === '啟用' && !mfaCheck_(id, p.code)) throw new Error('驗證碼或備用碼不正確');
+  rec = mfaRec_(id);
+  rec.sh.deleteRow(rec.row);
+  return true;
+}
+
+/** 管理員幫「別的管理員」重設(手機遺失又沒有備用碼時)。不能重設自己。p = {empId} */
+function mfaReset_(u, p) {
+  requireAdmin_(u);
+  var id = String(p.empId || '').trim();
+  if (id === String(u['員編'])) throw new Error('自己的請用「停用」');
+  var rec = mfaRec_(id);
+  if (rec) rec.sh.deleteRow(rec.row);
+  return true;
+}
+
+/** 登入第二步:p = {ticket, code}。ticket 5 分鐘內有效,錯 5 次作廢 */
+function loginMfa_(p) {
+  var cache = CacheService.getScriptCache(), key = 'mfa_' + String(p.ticket || '');
+  var raw = cache.get(key);
+  if (!raw) return { ok: false, error: '驗證已逾時,請重新登入' };
+  var d = JSON.parse(raw), tk = 'mfan_' + String(p.ticket), tries = Number(cache.get(tk) || 0);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var emp = findEmp_(d.id);
+    if (!emp || emp['狀態'] !== '在職') return { ok: false, error: '帳號無法使用' };
+    var ok = false;
+    try { ok = mfaCheck_(d.id, p.code); } catch (e) { return { ok: false, error: e.message }; }
+    if (!ok) {
+      logLogin_(d.id, emp['姓名'], '二階段失敗', d.ip, d.ua);
+      cache.put(tk, String(tries + 1), 300);
+      if (tries + 1 >= 5) { cache.remove(key); return { ok: false, error: '驗證失敗次數過多,請重新登入' }; }
+      return { ok: false, error: '驗證碼不正確' };
+    }
+    cache.remove(key);
+    return finishLogin_(emp, d.ip, d.ua);
+  } finally { lock.releaseLock(); }
+}
+
 /* ============ 寶雅報名開放時間(優先名單先報) ============ */
 
 var PRIORITY_DEFAULT = ['王逾奧', '高意涵', '施嘉欣', '曾靖紋', '許智超', '吳淑真', '陳明輝', '林美華', '朱建誠', '鄭宇倫', '何建弘', '郭承軒', '林麗珍', '王仲尉', '楊易合'];
@@ -1655,7 +1832,7 @@ function registerPurge_(u, p) {
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY || name === SHEETS.MFA)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);

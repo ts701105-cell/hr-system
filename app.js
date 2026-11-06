@@ -260,6 +260,7 @@
             d.addEventListener('close', function () { if (!done) reject(new Error('已取消登入')); }, { once: true });
           });
         }
+        if (r.mfa) r = await askMfa(r.ticket); // 有啟用二階段認證:再輸入手機驗證碼
         user = r.user;
         location.hash = '#/punch';
         renderShell();
@@ -1155,6 +1156,73 @@
   }
 
   /* ---------- 修改密碼 ---------- */
+  /* ---------- 二階段認證 ---------- */
+  function askMfa(ticket) {
+    return new Promise(function (resolve, reject) {
+      var d = openDialog('<h3>二階段認證</h3><p class="muted">請輸入手機驗證器 App 上顯示的 6 位數驗證碼。手機不在身邊時,可以改輸入一組備用碼(每組只能用一次)。</p>' +
+        '<form id="mfaf" class="form" style="grid-template-columns:1fr">' + field('mfac', '驗證碼或備用碼', '', 'text', 'autocomplete="one-time-code" autocapitalize="characters" required') +
+        '<div class="row"><button class="primary" type="submit">驗證</button><button type="button" data-close>取消</button></div></form>');
+      var done = false;
+      setTimeout(function () { var i = document.getElementById('mfac'); if (i) i.focus(); }, 50);
+      $('#mfaf').onsubmit = function (e) {
+        e.preventDefault();
+        var b = $('#mfaf .primary'); b.disabled = true;
+        API.loginMfa(ticket, val('mfac').trim()).then(function (x) { done = true; d.close(); resolve(x); }, function (err) { b.disabled = false; toast(err.message, true); });
+      };
+      d.addEventListener('close', function () { if (!done) reject(new Error('已取消登入')); }, { once: true });
+    });
+  }
+
+  async function renderMfa() {
+    var box = document.getElementById('mfabox');
+    if (!box) return;
+    var st;
+    try { st = await call('mfa.status'); } catch (e) { box.innerHTML = '<h3>二階段認證</h3><p class="muted">' + esc(e.message) + '</p>'; return; }
+    box.innerHTML = '<h3>二階段認證' + (st.enabled ? ' <span class="badge ok">已啟用</span>' : ' <span class="badge">未啟用</span>') + '</h3>' +
+      '<p class="hint">登入時除了密碼,還要輸入手機驗證器 App(Google Authenticator、Microsoft Authenticator 等)上每 30 秒更換一次的 6 位數驗證碼,密碼被別人知道也無法登入。</p>' +
+      (st.enabled ? '<p>剩餘備用碼:<b>' + st.backupLeft + '</b> 組。</p><button class="danger" id="mfaoff">停用二階段認證</button>' : '<button class="primary" id="mfaon">啟用二階段認證</button>');
+    var on = document.getElementById('mfaon'), off = document.getElementById('mfaoff');
+    if (on) on.onclick = function () {
+      guard(async function () {
+        var r = await call('mfa.setup');
+        var gen = await loadLib('vendor/qrcode.js', 'qrcode');
+        var q = gen(0, 'M'); q.addData(r.uri); q.make();
+        var d = openDialog('<h3>啟用二階段認證</h3><ol class="hint" style="padding-left:20px"><li>手機安裝驗證器 App(Google Authenticator 或 Microsoft Authenticator)。</li><li>在 App 按「新增」→「掃描 QR code」,掃下面的圖。</li><li>輸入 App 顯示的 6 位數驗證碼,按「確認啟用」。</li></ol>' +
+          '<div style="max-width:240px;margin:8px auto">' + q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }) + '</div>' +
+          '<p class="hint">掃不了 QR 的話,在 App 選「輸入設定金鑰」,帳號隨便填,金鑰:<br><b style="letter-spacing:1px;word-break:break-all">' + esc(r.secret) + '</b></p>' +
+          '<form id="mfae" class="form" style="grid-template-columns:1fr">' + field('mfacode', '6 位數驗證碼', '', 'text', 'inputmode="numeric" maxlength="6" autocomplete="off" required') +
+          '<div class="row"><button class="primary" type="submit">確認啟用</button><button type="button" data-close>取消</button></div></form>');
+        $('#mfae').onsubmit = function (e) {
+          e.preventDefault();
+          guard(async function () {
+            var x = await call('mfa.enable', { code: val('mfacode').trim() });
+            showBackupCodes(x.codes);
+            renderMfa();
+          }, $('#mfae .primary'));
+        };
+      }, on);
+    };
+    if (off) off.onclick = function () {
+      var c = prompt('要停用二階段認證,請輸入目前的 6 位數驗證碼(或一組備用碼):');
+      if (!c) return;
+      guard(async function () { await call('mfa.disable', { code: c.trim() }); toast('已停用二階段認證'); renderMfa(); }, off);
+    };
+  }
+
+  function showBackupCodes(codes) {
+    var text = codes.join('\n');
+    var d = openDialog('<h3>備用碼(只顯示這一次)</h3><p class="hint"><b>請現在抄下或列印,收在安全的地方。</b>手機遺失或無法使用驗證器時,每組備用碼可以代替驗證碼登入一次。關掉這個視窗後就看不到了。</p>' +
+      '<pre id="bkc" style="font-size:20px;line-height:1.8;background:var(--bg,#f4f6fa);padding:12px;border-radius:8px;text-align:center">' + codes.map(esc).join('\n') + '</pre>' +
+      '<div class="row"><button id="bkcopy">複製</button><button id="bkprint">列印</button><button class="primary" id="bkdone">我已經保存好了</button></div>');
+    $('#bkcopy').onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { toast('已複製'); }, function () { toast('無法自動複製,請手動抄下', true); }); };
+    $('#bkprint').onclick = function () {
+      var w = window.open('', '_blank');
+      if (!w) return toast('瀏覽器擋住了列印視窗,請手動抄下', true);
+      w.document.write('<pre style="font-size:22px;line-height:2">東慧人事管理系統 備用碼\n\n' + codes.map(esc).join('\n') + '</pre>'); w.document.close(); w.print();
+    };
+    $('#bkdone').onclick = function () { d.close(); toast('二階段認證已啟用'); };
+  }
+
   async function viewPassword(main) {
     var locked = user.role === 'employee'; // 員工不能自行改密碼,由人資重設
     main.innerHTML = '<h2>' + (locked ? '帳號安全' : '修改密碼') + '</h2>' + (locked
@@ -1163,6 +1231,7 @@
       field('p0', '目前密碼', '', 'password', 'autocomplete="current-password" required') + field('p1', '新密碼(至少 8 碼)', '', 'password', 'autocomplete="new-password" minlength="8" required') +
       field('p2', '再輸入一次新密碼', '', 'password', 'autocomplete="new-password" required') + '<button class="primary" type="submit">更新密碼</button></form></div>') +
       '<div class="card"><h3>我的近期登入紀錄</h3><p class="hint">若看到不是您本人的登入(陌生 IP 或時間),請' + (locked ? '' : '立即修改密碼並') + '通知人資。</p><div id="mylog" class="muted">載入中…</div></div>';
+    if (user.role === 'admin') { $('#mylog').parentNode.insertAdjacentHTML('beforebegin', '<div class="card" id="mfabox">載入中…</div>'); renderMfa(); }
     if (!locked) $('#pf').onsubmit = function (e) {
       e.preventDefault();
       if (val('p1') !== val('p2')) return toast('兩次輸入的新密碼不一致', true);

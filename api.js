@@ -370,12 +370,17 @@
     login: async function (id, password, meta) {
       var params = { id: id, password: password, ip: (meta && meta.ip) || '', ua: (meta && meta.ua) || '' };
       var r = await (DEMO ? demo('login', params) : remote('login', params));
-      if (r.choose) return r; // 同名同密碼:要先選單位,選好才發 token
+      if (r.choose || r.mfa) return r; // 同名同密碼要先選單位、有二階段認證要先輸入驗證碼,通過才發 token
       setToken(r.token);
       return r;
     },
     loginPick: async function (ticket, empId) {
       var r = await remote('login.pick', { ticket: ticket, empId: empId });
+      setToken(r.token);
+      return r;
+    },
+    loginMfa: async function (ticket, code) {
+      var r = await remote('login.mfa', { ticket: ticket, code: code });
       setToken(r.token);
       return r;
     },
