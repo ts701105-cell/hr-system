@@ -245,6 +245,21 @@
       guard(async function () {
         var ip = await getIP();
         var r = await API.login(val('li').trim(), val('lp'), { ip: ip, ua: navigator.userAgent });
+        if (r.choose) { // 同名同密碼(同一個人在多個單位):選要進哪個單位
+          r = await new Promise(function (resolve, reject) {
+            var d = openDialog('<h3>請選擇要登入的單位</h3><p class="muted">您在系統裡有多個單位的資料,請選擇這次要使用哪一個。</p>' +
+              r.options.map(function (o, i) { return '<div style="margin:8px 0"><button class="primary" data-pk="' + i + '" style="width:100%">' + esc(o.dept || '未設定單位') + '(員編 ' + esc(o.empId) + ')</button></div>'; }).join('') +
+              '<div class="row" style="margin-top:12px"><button type="button" data-close>取消</button></div>');
+            var opts = r.options, ticket = r.ticket, done = false;
+            d.querySelectorAll('[data-pk]').forEach(function (b) {
+              b.onclick = function () {
+                done = true;
+                API.loginPick(ticket, opts[+b.dataset.pk].empId).then(function (x) { d.close(); resolve(x); }, function (e) { d.close(); reject(e); });
+              };
+            });
+            d.addEventListener('close', function () { if (!done) reject(new Error('已取消登入')); }, { once: true });
+          });
+        }
         user = r.user;
         location.hash = '#/punch';
         renderShell();

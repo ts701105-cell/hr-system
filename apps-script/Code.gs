@@ -92,6 +92,7 @@ function doPost(e) {
     var action = req.action;
     var p = req.params || {};
     if (action === 'login') return json_(login_(p));
+    if (action === 'login.pick') return json_(loginPick_(p));
     if (action === 'register.submit' || action === 'register.status') { // 新人註冊:不需登入
       lock.waitLock(20000);
       return json_({ ok: true, data: action === 'register.submit' ? registerSubmit_(p) : registerStatus_(p) });
@@ -174,13 +175,25 @@ function login_(p) {
     return { ok: false, error: '登入失敗次數過多,請 15 分鐘後再試' };
   }
 
-  var emp = findLoginEmp_(id, pwd);
+  var cands = findLoginEmps_(id, pwd);
+  var emp = cands[0];
   if (!emp || emp['狀態'] !== '在職' || emp['密碼雜湊'] !== hash_(pwd)) {
     cache.put(failKey, String(fails + 1), 900);
     logLogin_(id, emp ? emp['姓名'] : '', '失敗', ip, ua);
     return { ok: false, error: '帳號或密碼錯誤' };
   }
   cache.remove(failKey);
+  if (cands.length > 1) { // 同名且同密碼(同一個人在多個單位):密碼已驗證通過,讓他自己選要進哪個單位
+    var ticket = Utilities.getUuid() + Utilities.getUuid();
+    cache.put('pick_' + ticket, JSON.stringify({ ids: cands.map(function (e) { return String(e['員編']); }), ip: ip, ua: ua }), 300);
+    return { ok: true, data: { choose: true, ticket: ticket, options: cands.map(function (e) { return { empId: String(e['員編']), dept: String(e['部門'] || '') }; }) } };
+  }
+  return finishLogin_(emp, ip, ua);
+}
+
+/** 登入成功後的共同收尾:寫登入紀錄、發 token */
+function finishLogin_(emp, ip, ua) {
+  var cache = CacheService.getScriptCache();
   var empId = String(emp['員編']); // 輸入的帳號可能是姓名,token 與登入紀錄一律用員編
   var last = lastLogin_(empId); // 先取上一次登入,再寫入這一次
   logLogin_(empId, emp['姓名'], '成功', ip, ua);
@@ -189,16 +202,32 @@ function login_(p) {
   return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234'), lastLogin: last, ip: ip } };
 }
 
-/** 登入帳號可輸入「員編」或「姓名」。姓名可能同名,所以在符合的在職員工中找密碼也對的那一位;
- *  同名又同密碼(例如生日相同)無法分辨時一律當作登入失敗,請改用員編登入。 */
-function findLoginEmp_(account, pwd) {
+/** 同名同密碼的人選好單位後完成登入。p = {ticket, empId}(ticket 5 分鐘內有效、只能用一次) */
+function loginPick_(p) {
+  var cache = CacheService.getScriptCache();
+  var key = 'pick_' + String(p.ticket || '');
+  var raw = cache.get(key);
+  if (!raw) return { ok: false, error: '選擇已逾時,請重新登入' };
+  var d = JSON.parse(raw), empId = String(p.empId || '');
+  if (d.ids.indexOf(empId) < 0) return { ok: false, error: '選擇無效' };
+  cache.remove(key);
+  var emp = findEmp_(empId);
+  if (!emp || emp['狀態'] !== '在職') return { ok: false, error: '帳號無法使用' };
+  return finishLogin_(emp, d.ip, d.ua);
+}
+
+/** 登入帳號可輸入「員編」或「姓名」。姓名可能同名,所以在符合的在職員工中找密碼也對的人;
+ *  同名又同密碼(例如同一個人在寶雅和鷹世服各有一筆員編)會全部回傳,讓登入時選單位。
+ *  回傳陣列;找不到人時回傳空陣列;姓名對但密碼都不對時回傳第一位(供登入失敗時記錄)。 */
+function findLoginEmps_(account, pwd) {
   var list = readObjs_(SHEETS.EMP).filter(function (e) { return e['狀態'] === '在職'; });
   var byId = list.filter(function (e) { return String(e['員編']) === account; })[0];
-  if (byId) return byId;
+  if (byId) return [byId];
   var h = hash_(pwd);
   var hit = list.filter(function (e) { return String(e['姓名']).trim() === account && e['密碼雜湊'] === h; });
-  if (hit.length === 1) return hit[0];
-  return hit.length > 1 ? null : (list.filter(function (e) { return String(e['姓名']).trim() === account; })[0] || null);
+  if (hit.length) return hit;
+  var any = list.filter(function (e) { return String(e['姓名']).trim() === account; })[0];
+  return any ? [any] : [];
 }
 
 /** IP 由瀏覽器自行回報(Apps Script 看不到連線來源),只接受 IPv4 / IPv6 格式,其他一律記為「未知」 */
