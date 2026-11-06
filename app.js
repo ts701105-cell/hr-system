@@ -759,7 +759,7 @@
 
     if (!mgr) {
       var slots = await call('signup.open', { month: month });
-      var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;寶雅依開放時間報名(優先名單較早開放);報名後等主管錄取,錄取後會出現在「排班狀態」。' : '您尚未設定所屬單位,請聯絡人資。';
+      var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;寶雅依開放時間報名(優先名單較早開放)。' : '您尚未設定所屬單位,請聯絡人資。';
       main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '尚餘缺額', '狀態', ''], slots.map(function (s, i) {
         var full = s.quota <= 0;
         var st = s.mine === '已錄取' ? badge('已錄取') : s.mine ? badge('已報名') : full ? '<span class="badge bad">額滿</span>' : '';
