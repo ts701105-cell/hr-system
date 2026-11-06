@@ -977,9 +977,7 @@ function exportEmployeesXlsx() {
     if (!String(r[0]).trim()) return;
     rows.push(idx.map(function (i) { var v = i < 0 ? '' : r[i]; return v instanceof Date ? Utilities.formatDate(v, 'Asia/Taipei', 'yyyy-MM-dd') : v; }));
   });
-  var root = DriveApp.getFolderById(DRIVE_FOLDER_ID);
-  var fi = root.getFoldersByName('公司');
-  var dir = fi.hasNext() ? fi.next() : root.createFolder('公司');
+  var dir = DriveApp.getFolderById(DRIVE_FOLDER_ID);
   var name = '員工名單.xlsx', blob = buildXlsxBlob_('員工名單', rows, name);
   var it = dir.getFilesByName(name);
   if (it.hasNext()) {
@@ -1034,12 +1032,10 @@ function newCancelXlsxBlob_() {
   return Utilities.zip(parts, CANCEL_XLSX).setContentType(mime);
 }
 
-/** 在 排班班表\公司\取消排名.xlsx 最後面追加一列;檔案或資料夾不存在就建立。 */
+/** 在 排班班表\公司\取消排名.xlsx 最後面追加一列;檔案不存在就建立。 */
 function appendCancelXlsx_(vals) {
   var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-  var root = DriveApp.getFolderById(DRIVE_FOLDER_ID);
-  var fi = root.getFoldersByName('公司');
-  var dir = fi.hasNext() ? fi.next() : root.createFolder('公司');
+  var dir = DriveApp.getFolderById(DRIVE_FOLDER_ID); // 這個資料夾就是 排班班表\公司,取消排名.xlsx 直接放在裡面
   var it = dir.getFilesByName(CANCEL_XLSX);
   if (!it.hasNext()) {
     var blob = newCancelXlsxBlob_();
