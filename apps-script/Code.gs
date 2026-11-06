@@ -943,6 +943,58 @@ function shiftsCancelOwn_(u, p) {
 }
 
 
+/* ============ 匯出員工名單.xlsx(放在 排班班表\公司) ============ */
+
+/** 把二維陣列(第一列是標題)做成單一分頁的 .xlsx;全部存成文字,員編不會被改成數字。 */
+function buildXlsxBlob_(sheetName, rows, fileName) {
+  var cols = function (i) { var c = ''; i++; while (i > 0) { var m = (i - 1) % 26; c = String.fromCharCode(65 + m) + c; i = Math.floor((i - 1) / 26); } return c; };
+  var body = rows.map(function (r, ri) {
+    return '<row r="' + (ri + 1) + '">' + r.map(function (v, ci) {
+      return '<c r="' + cols(ci) + (ri + 1) + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc_(v) + '</t></is></c>';
+    }).join('') + '</row>';
+  }).join('');
+  var widths = rows[0].map(function (_, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="14" customWidth="1"/>'; }).join('');
+  var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  var parts = [
+    Utilities.newBlob(head + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>', 'application/xml', '[Content_Types].xml'),
+    Utilities.newBlob(head + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>', 'application/xml', '_rels/.rels'),
+    Utilities.newBlob(head + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="' + xmlEsc_(sheetName) + '" sheetId="1" r:id="rId1"/></sheets></workbook>', 'application/xml', 'xl/workbook.xml'),
+    Utilities.newBlob(head + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>', 'application/xml', 'xl/_rels/workbook.xml.rels'),
+    Utilities.newBlob(head + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>' + widths + '</cols><sheetData>' + body + '</sheetData></worksheet>', 'application/xml', 'xl/worksheets/sheet1.xml')
+  ];
+  return Utilities.zip(parts, fileName).setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
+/** 把「員工」分頁匯出成 排班班表\公司\員工名單.xlsx(不含密碼雜湊);檔案已存在就直接更新內容。在編輯器手動執行即可。 */
+function exportEmployeesXlsx() {
+  var keep = ['員編', '姓名', '部門', '職稱', '角色', '主管員編', '到職日', '狀態', 'Email', '電話'];
+  var sh = sheet_(SHEETS.EMP), n = sh.getLastRow();
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = keep.map(function (k) { return hdr.indexOf(k); });
+  var vals = n > 1 ? sh.getRange(2, 1, n - 1, hdr.length).getValues() : [];
+  var rows = [keep];
+  vals.forEach(function (r) {
+    if (!String(r[0]).trim()) return;
+    rows.push(idx.map(function (i) { var v = i < 0 ? '' : r[i]; return v instanceof Date ? Utilities.formatDate(v, 'Asia/Taipei', 'yyyy-MM-dd') : v; }));
+  });
+  var root = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  var fi = root.getFoldersByName('公司');
+  var dir = fi.hasNext() ? fi.next() : root.createFolder('公司');
+  var name = '員工名單.xlsx', blob = buildXlsxBlob_('員工名單', rows, name);
+  var it = dir.getFilesByName(name);
+  if (it.hasNext()) {
+    var f = it.next();
+    var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files/' + f.getId() + '?uploadType=media', {
+      method: 'patch', contentType: mime, payload: blob.getBytes(), headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) throw new Error('更新員工名單.xlsx 失敗(' + res.getResponseCode() + ')');
+  } else {
+    dir.createFile(blob.setName(name));
+  }
+  Logger.log('已匯出 ' + (rows.length - 1) + ' 位員工到 公司/' + name);
+  return rows.length - 1;
+}
+
 /* ============ 取消紀錄:寫入分頁 + 追加到雲端硬碟「公司」資料夾的 取消排名.xlsx ============ */
 
 var CANCEL_XLSX = '取消排名.xlsx';
