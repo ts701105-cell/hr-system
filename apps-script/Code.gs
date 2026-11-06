@@ -16,7 +16,8 @@ var SHEETS = {
   SLOT: '名額',
   SIGNUP: '報名',
   REG: '註冊申請',
-  CANCEL: '取消紀錄'
+  CANCEL: '取消紀錄',
+  PRIORITY: '優先名單'
 };
 
 var HEADERS = {
@@ -31,6 +32,7 @@ var HEADERS = {
   '名額': ['日期', '單位', '班別', '需求人數'],
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
   '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因', '來源', '登入IP', '登入時間'],
+  '優先名單': ['姓名', '說明'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
 
@@ -780,6 +782,7 @@ function signupOpen_(u, p) {
   });
   var types = {};
   shiftTypes_().forEach(function (s) { types[s.name] = s; });
+  var prio = priorityNames_(), nowMs = Date.now();
   return readObjs_(SHEETS.SLOT)
     .filter(function (s) {
       var d = String(s['日期']);
@@ -790,8 +793,10 @@ function signupOpen_(u, p) {
     })
     .map(function (s) {
       var k = s['日期'] + '|' + s['單位'] + '|' + s['班別'], ty = types[s['班別']] || {};
+      var openAt = signupOpenAt_(s['單位'], String(s['日期']), u['姓名'], prio);
       return { date: s['日期'], unit: s['單位'], shift: s['班別'], start: ty.start || '', end: ty.end || '',
-        quota: Number(s['需求人數']) || 0, count: cnt[k] || 0, mine: mine[k] || '' };
+        quota: Number(s['需求人數']) || 0, count: cnt[k] || 0, mine: mine[k] || '',
+        open: nowMs >= openAt, openAt: openAt ? openAtLabel_(openAt) : '' };
     })
     .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.unit + a.shift < b.unit + b.shift ? -1 : 1); });
 }
@@ -810,6 +815,35 @@ function slotAdjust_(date, unit, shift, delta) {
 }
 
 /** 該日期所屬那一週(週一開頭)的週一日期,如 2026-11-04 → 2026-11-02 */
+/* ============ 寶雅報名開放時間(優先名單先報) ============ */
+
+var PRIORITY_DEFAULT = ['王逾奧', '高意涵', '施嘉欣', '曾靖紋', '許智超', '吳淑真', '陳明輝', '林美華', '朱建誠', '鄭宇倫', '何建弘', '郭承軒', '林麗珍', '王仲尉', '楊易合'];
+
+/** 優先名單(「優先名單」分頁的姓名欄,人資可直接在試算表增減)。第一次使用時自動填入預設 15 人。 */
+function priorityNames_() {
+  var sh = sheet_(SHEETS.PRIORITY), props = PropertiesService.getScriptProperties();
+  if (sh.getLastRow() < 2 && !props.getProperty('PRIORITY_SEEDED')) {
+    sh.getRange(2, 1, PRIORITY_DEFAULT.length, 2).setValues(PRIORITY_DEFAULT.map(function (n) { return [n, '寶雅排班優先名單']; }));
+    props.setProperty('PRIORITY_SEEDED', '1');
+  }
+  var n = sh.getLastRow(), out = {};
+  if (n > 1) sh.getRange(2, 1, n - 1, 1).getValues().forEach(function (r) { var v = String(r[0]).trim(); if (v) out[v] = true; });
+  return out;
+}
+
+/** 寶雅某一天的班,這位員工從什麼時候開始可以報名(毫秒)。
+ *  排班週 = 週一到週日。優先名單:排班週的上個星期一 0:00 開放;其他人:排班週前一個星期六 4:00 開放。
+ *  例:11/9-11/15 這週,優先名單 11/2 0:00,其他人 11/7 4:00。其他單位不限制,回傳 0。 */
+function signupOpenAt_(unit, date, name, prio) {
+  if (unit !== '寶雅') return 0;
+  var monday = new Date(weekKey_(date) + 'T00:00:00+08:00').getTime();
+  return prio[String(name).trim()] ? monday - 7 * 86400000 : monday - 2 * 86400000 + 4 * 3600000;
+}
+
+function openAtLabel_(ms) {
+  return Utilities.formatDate(new Date(ms), 'Asia/Taipei', 'MM/dd HH:mm');
+}
+
 function weekKey_(d) {
   var t = new Date(d + 'T00:00:00Z'), dow = (t.getUTCDay() + 6) % 7;
   return Utilities.formatDate(new Date(t.getTime() - dow * 86400000), 'UTC', 'yyyy-MM-dd');
@@ -831,6 +865,8 @@ function signupApply_(u, p) {
   if (!unit || String(u['部門'] || '') !== unit) throw new Error('只能報名自己所屬單位的班');
   var slot = findSlot_(date, unit, shift);
   if (!slot) throw new Error('此日期未開放報名');
+  var openAt = signupOpenAt_(unit, date, u['姓名'], priorityNames_());
+  if (Date.now() < openAt) throw new Error('這週的班要到 ' + openAtLabel_(openAt) + ' 才開放您報名');
   var rows = readObjs_(SHEETS.SIGNUP), count = 0;
   if (unit === '寶雅') { // 寶雅一週(週一到週日)最多報名 3 天
     var wk = weekKey_(date), mine = 0;
@@ -1571,7 +1607,7 @@ function registerPurge_(u, p) {
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
