@@ -415,7 +415,7 @@
   /* ---------- 外框與路由 ---------- */
   var ROUTES = [
     { path: 'punch', label: '打卡', roles: ['manager', 'admin'], view: viewPunch },
-    { path: 'leave', label: '請假', roles: ['employee', 'manager', 'admin'], view: viewLeave },
+    { path: 'leave', label: '請假', roles: ['manager', 'admin'], view: viewLeave },
     { path: 'schedule', label: '排班狀態', roles: ['employee', 'manager', 'admin'], view: viewSchedule },
     { path: 'signup', label: '排班報名', roles: ['employee', 'manager', 'admin'], view: viewSignup },
     { path: 'approvals', label: '假單簽核', roles: ['manager', 'admin'], group: '主管', view: viewApprovals },
