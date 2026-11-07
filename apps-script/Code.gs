@@ -1749,7 +1749,6 @@ function registerSubmit_(p) {
   }
   sh.appendRow([appId, name, idNo, birthday, phone, email, unit, saved.front, saved.back, saved.bank, '待審核', now_(), '', '', '', '']);
   sh.getRange(sh.getLastRow(), 4).setNumberFormat('@').setValue(birthday); // 生日存成文字,避免被轉成日期
-  notifyAdminReg_(name, unit, appId);
   return { appId: appId };
 }
 
@@ -1775,20 +1774,6 @@ function regFind_(appId) {
 }
 
 /** 管理員:申請清單。p = {status}(空白 = 全部) */
-/** 有新申請就寄信給部署者(自己)。收件人取自執行身分,程式碼裡不放信箱;信中不放身分證等個資 */
-function notifyAdminReg_(name, unit, appId) {
-  try {
-    var to = Session.getEffectiveUser().getEmail();
-    if (!to) return;
-    MailApp.sendEmail(to, '【人事系統】新註冊申請待審核:' + name + '(' + unit + ')',
-      '有一筆新的註冊申請等您審核。\n\n姓名:' + name + '\n單位:' + unit + '\n申請編號:' + appId + '\n時間:' + now_() +
-      '\n\n請登入人事系統 → 註冊審核 處理。\n(此信由系統自動寄出)');
-  } catch (e) { Logger.log('通知信寄送失敗:' + e.message); } // 寄信失敗不影響申請本身
-}
-/** 第一次使用:在編輯器執行此函式並按「允許」,之後新申請才會寄信 */
-function authorizeMail() {
-  MailApp.sendEmail(Session.getEffectiveUser().getEmail(), '【人事系統】通知信測試', '收到這封信代表新申請通知已啟用。');
-}
 function registerList_(u, p) {
   requireAdmin_(u);
   var st = String(p.status || '');
