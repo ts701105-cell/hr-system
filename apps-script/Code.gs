@@ -1055,8 +1055,16 @@ function signupApply_(u, p) {
     if (String(r['日期']) === date && r['單位'] === unit && r['班別'] === shift) count++;
   });
   if ((Number(slot['需求人數']) || 0) <= 0) throw new Error('名額已滿'); // 「需求人數」欄 = 班表目前尚餘缺額
+  var st = null;
+  shiftTypes_().forEach(function (t) { if (t.name === shift) st = t; });
+  if (!st) throw new Error('無此班別: ' + shift);
   writeBackSchedule_(unit, date, shift, u['姓名'], false); // 先把名字寫進雲端硬碟班表(找不到空格會丟錯,此時不建立報名)
-  sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已報名', now_()]);
+  // 報名成功即直接錄取:寫入排班(同人同日覆蓋),報名狀態記為已錄取
+  var shs = sheet_(SHEETS.SHIFT), sn = shs.getLastRow(), srow = -1;
+  if (sn > 1) shs.getRange(2, 1, sn - 1, 2).getValues().forEach(function (r, i) { if (dstr_(r[0]) === date && String(r[1]) === String(u['員編'])) srow = i + 2; });
+  if (srow < 0) srow = sn + 1;
+  shs.getRange(srow, 1, 1, 6).setNumberFormat('@').setValues([[date, u['員編'], u['姓名'], st.name, st.start, st.end]]);
+  sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已錄取', now_()]);
   slotAdjust_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
   return true;
 }
@@ -1073,7 +1081,7 @@ function signupCancel_(u, p) {
   for (var i = 0; i < vals.length; i++) {
     var r = vals[i];
     if (dstr_(r[0]) === String(p.date) && String(r[1]) === String(u['員編']) && r[3] === p.unit && r[4] === p.shift) {
-      if (r[5] === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
+      if (r[5] === '已錄取') return shiftsCancelOwn_(u, { date: String(p.date), reason: reason }, '排班報名'); // 上班前 30 分鐘前可取消
       try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
       slotAdjust_(String(p.date), p.unit, p.shift, 1);
@@ -1086,7 +1094,7 @@ function signupCancel_(u, p) {
 
 /** 員工取消自己的班,上班前 30 分鐘以前都可以(不論是網站報名的,還是本來就排在班表上的):
  *  從雲端硬碟班表清掉名字(寫前備份)、刪除排班、移除對應報名紀錄、尚餘缺額加回 1。p = {date} */
-function shiftsCancelOwn_(u, p) {
+function shiftsCancelOwn_(u, p, src) {
   var date = String(p.date || ''), reason = String(p.reason || '').trim();
   if (!validDate_(date)) throw new Error('日期格式錯誤');
   if (reason.length < 2) throw new Error('請填寫取消原因');
@@ -1115,7 +1123,7 @@ function shiftsCancelOwn_(u, p) {
     }
   }
   slotAdjust_(date, unit, shift, 1);
-  recordCancel_(u, date, unit, shift, reason, '排班狀況');
+  recordCancel_(u, date, unit, shift, reason, src || '排班狀況');
   return true;
 }
 

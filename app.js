@@ -764,7 +764,7 @@
       main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '尚餘缺額', '狀態', ''], slots.map(function (s, i) {
         var full = s.quota <= 0;
         var st = s.mine === '已錄取' ? badge('已錄取') : s.mine ? badge('已報名') : full ? '<span class="badge bad">額滿</span>' : '';
-        var btn = s.mine === '已報名' ? '<button class="sm danger" data-c="' + i + '">取消報名</button>' : (!s.mine && !full ? (s.open === false ? '<span class="muted">' + esc(s.openAt) + ' 開放</span>' : '<button class="sm primary" data-a="' + i + '">報名</button>') : '');
+        var btn = s.mine ? '<button class="sm danger" data-c="' + i + '">取消報名</button>' : (!s.mine && !full ? (s.open === false ? '<span class="muted">' + esc(s.openAt) + ' 開放</span>' : '<button class="sm primary" data-a="' + i + '">報名</button>') : '');
         return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.quota + '</td><td>' + st + '</td><td>' + btn + '</td></tr>';
       }), '這個月目前沒有開放報名的班') + '</div>';
       bindBar();
@@ -774,7 +774,7 @@
             var s = slots[+(b.dataset.a || b.dataset.c)];
             var reason = '';
             if (action === 'signup.cancel') {
-              reason = prompt('取消 ' + s.date + ' 的「' + s.shift + '」報名,班表上的名字會一併移除。\n請填寫取消原因(必填):');
+              reason = prompt('取消 ' + s.date + ' 的「' + s.shift + '」,班表上的名字會一併移除(上班前 30 分鐘前才能取消)。\n請填寫取消原因(必填):');
               if (!reason || reason.trim().length < 2) { if (reason !== null) toast('請填寫取消原因', true); return; }
               reason = reason.trim();
             }
@@ -809,10 +809,9 @@
       '<div><label for="n_q">需求人數</label><input id="n_q" type="number" min="1" max="500" value="5" style="width:90px"></div>' +
       '<button class="primary" id="nadd">新增</button></div></div>';
 
-    var pendingN = list.filter(function (r) { return r.status === '已報名'; }).length;
-    var listCard = '<div class="card"><div class="row"><h3 style="margin:0">報名名單(待錄取 ' + pendingN + ')</h3><div class="spacer"></div><button class="primary" id="cf" disabled>錄取勾選者</button></div>' +
-      table(['', '日期', '班別', '單位', '員工', '狀態', '報名時間'], list.map(function (r, i) {
-        return '<tr><td>' + (r.status === '已報名' ? '<input type="checkbox" data-r="' + i + '">' : '') + '</td><td>' + dlabel(r.date) + '</td><td>' + esc(r.shift) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.name) + '(' + esc(r.empId) + ')</td><td>' + badge(r.status) + '</td><td>' + esc(r.time) + '</td></tr>';
+    var listCard = '<div class="card"><h3>報名名單(報名即錄取)</h3>' +
+      table(['日期', '班別', '單位', '員工', '狀態', '報名時間'], list.map(function (r) {
+        return '<tr><td>' + dlabel(r.date) + '</td><td>' + esc(r.shift) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.name) + '(' + esc(r.empId) + ')</td><td>' + badge(r.status) + '</td><td>' + esc(r.time) + '</td></tr>';
       }), '這個月還沒有人報名') + '</div>';
     main.innerHTML = bar + quotaCard + listCard;
     bindBar();
@@ -853,19 +852,6 @@
         toast('已新增名額');
         var m = val('n_d').slice(0, 7); if (m !== month) viewSignup.month = m;
         viewSignup(main);
-      }, this);
-    };
-    document.querySelectorAll('[data-r]').forEach(function (c) {
-      c.onchange = function () { $('#cf').disabled = !document.querySelector('[data-r]:checked'); };
-    });
-    $('#cf').onclick = function () {
-      guard(async function () {
-        var items = [];
-        document.querySelectorAll('[data-r]:checked').forEach(function (c) {
-          var r = list[+c.dataset.r]; items.push({ date: r.date, empId: r.empId, unit: r.unit, shift: r.shift });
-        });
-        await call('signup.confirm', { items: items });
-        toast('已錄取 ' + items.length + ' 人,並寫入排班'); viewSignup(main);
       }, this);
     };
   }

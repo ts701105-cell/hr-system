@@ -262,14 +262,17 @@
       if (!s) throw new Error('此日期未開放報名');
       if (db.signups.some(function (r) { return r.empId === u.id && r.date === p.date; })) throw new Error('這一天已經報名過了');
       if (db.signups.filter(function (r) { return r.date === p.date && r.unit === p.unit && r.shift === p.shift; }).length >= s.quota) throw new Error('名額已滿');
-      db.signups.push({ date: p.date, empId: u.id, name: u.name, unit: p.unit, shift: p.shift, status: '已報名', time: nowStr() });
+      db.signups.push({ date: p.date, empId: u.id, name: u.name, unit: p.unit, shift: p.shift, status: '已錄取', time: nowStr() });
+      var t0 = db.shiftTypes.filter(function (x) { return x.name === p.shift; })[0];
+      db.shifts = db.shifts.filter(function (x) { return !(x.date === p.date && x.empId === u.id); });
+      if (t0) db.shifts.push({ date: p.date, empId: u.id, name: u.name, shift: t0.name, start: t0.start, end: t0.end });
       return true;
     },
     'signup.cancel': function (db, u, p) {
       sg(db);
       var r = db.signups.filter(function (x) { return x.date === p.date && x.empId === u.id && x.unit === p.unit && x.shift === p.shift; })[0];
       if (!r) throw new Error('找不到報名紀錄');
-      if (r.status === '已錄取') throw new Error('已錄取的班無法自行取消,請聯絡主管');
+      db.shifts = db.shifts.filter(function (x) { return !(x.date === p.date && x.empId === u.id); });
       db.signups.splice(db.signups.indexOf(r), 1);
       return true;
     },
