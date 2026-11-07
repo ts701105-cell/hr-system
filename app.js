@@ -359,7 +359,7 @@
     var list = await call('register.list', { status: st });
     main.innerHTML = '<div class="row"><h2 style="margin:0">註冊審核</h2><div class="spacer"></div><select id="rst" style="width:auto">' +
       ['待審核', '已通過', '已退件', ''].map(function (x) { return '<option value="' + x + '"' + (x === st ? ' selected' : '') + '>' + (x || '全部') + '</option>'; }).join('') + '</select></div>' +
-      '<p class="hint">新人在登入頁送出申請後會出現在這裡。請核對證件與填寫資料,通過時填入員編,系統會自動建立帳號(帳號=姓名、密碼=民國生日 7 碼)。</p>' +
+      '<p class="hint">新人在登入頁送出申請後會出現在這裡。請核對證件與填寫資料,可填入員編(不填會先給暫編),系統會自動建立帳號(帳號=姓名、密碼=民國生日 7 碼)。</p>' +
       '<div class="card">' + table(['申請時間', '姓名', '單位', '電話', '狀態', ''], list.map(function (r, i) {
         return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.phone) + '</td><td>' + badge(r.status) + '</td><td><button class="sm primary" data-v="' + i + '">檢視</button></td></tr>';
       }), '沒有申請') + '</div>';
@@ -369,13 +369,17 @@
     });
   }
 
+  function rocDate(iso) {
+    var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? '民國 ' + (+m[1] - 1911) + ' 年 ' + (+m[2]) + ' 月 ' + (+m[3]) + ' 日' : String(iso || '');
+  }
   function regDetail(r, done) {
     var pend = r.status === '待審核';
     openDialog('<h3>' + esc(r.name) + ' · ' + esc(r.unit) + ' ' + badge(r.status) + '</h3>' +
-      '<p class="muted">申請編號 ' + esc(r.appId) + '(' + esc(r.time) + ')<br>身分證字號:<b>' + esc(r.idNo) + '</b>　生日:' + esc(r.birthday) + '<br>電話:' + esc(r.phone) + '　Email:' + esc(r.email) +
+      '<p class="muted">申請編號 ' + esc(r.appId) + '(' + esc(r.time) + ')<br>身分證字號:<b>' + esc(r.idNo) + '</b>　生日:' + esc(rocDate(r.birthday)) + '<br>電話:' + esc(r.phone) + '　Email:' + esc(r.email) +
       (r.reviewer ? '<br>審核:' + esc(r.reviewer) + '(' + esc(r.reviewTime) + ')' + (r.empId ? ',員編 ' + esc(r.empId) : '') + (r.note ? ',原因:' + esc(r.note) : '') : '') + '</p>' +
       (r.hasFiles ? '<div class="row"><button class="sm" data-k="front">身分證正面</button><button class="sm" data-k="back">身分證反面</button><button class="sm" data-k="bank">存摺封面</button></div><div id="rprev" style="margin:10px 0;text-align:center"></div>' : '<p class="hint">證件檔案已刪除。</p>') +
-      (pend ? '<div class="form"><div><label>員編(通過時必填,由管理員輸入)</label><input id="aemp" placeholder="例如 164958"></div><div><label>退件原因(退件時必填)</label><input id="arsn"></div></div>' +
+      (pend ? '<div class="form"><div><label>員編(選填,由管理員輸入;不填會先給暫編 TMP001…)</label><input id="aemp" placeholder="例如 164958"></div><div><label>退件原因(退件時必填)</label><input id="arsn"></div></div>' +
         '<div class="row"><button class="primary" id="aok">通過並建立帳號</button><button class="danger" id="ano">退件</button><button data-close>關閉</button></div>'
         : '<div class="row">' + (r.hasFiles ? '<button class="danger" id="apurge">刪除證件檔案</button>' : '') + '<button data-close>關閉</button></div>'));
     document.querySelectorAll('[data-k]').forEach(function (b) {

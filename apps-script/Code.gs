@@ -1686,7 +1686,8 @@ function validTwId_(s) {
   return (sum + Number(s.charAt(9))) % 10 === 0;
 }
 
-function rocPwd_(iso) { // 1990-05-18 → 0790518
+function rocPwd_(iso) { // 1990-05-18 → 0790518(試算表可能把日期存成 Date,先轉成文字)
+  iso = dstr_(iso);
   var m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return ('00' + (Number(m[1]) - 1911)).slice(-3) + m[2] + m[3];
 }
@@ -1747,6 +1748,7 @@ function registerSubmit_(p) {
     throw err;
   }
   sh.appendRow([appId, name, idNo, birthday, phone, email, unit, saved.front, saved.back, saved.bank, '待審核', now_(), '', '', '', '']);
+  sh.getRange(sh.getLastRow(), 4).setNumberFormat('@').setValue(birthday); // 生日存成文字,避免被轉成日期
   return { appId: appId };
 }
 
@@ -1755,7 +1757,7 @@ function registerStatus_(p) {
   var idNo = String(p.idNo || '').trim().toUpperCase(), birthday = String(p.birthday || '').trim();
   checkRate_('regq_' + idNo, 8, 900);
   var sh = sheet_(SHEETS.REG), n = sh.getLastRow(), hit = null;
-  (n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : []).forEach(function (r) { if (String(r[2]) === idNo && String(r[3]) === birthday) hit = r; });
+  (n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : []).forEach(function (r) { if (String(r[2]) === idNo && dstr_(r[3]) === birthday) hit = r; });
   if (!hit) throw new Error('查無申請資料,請確認身分證字號與生日');
   return { appId: hit[0], status: hit[10], time: hit[11], note: hit[10] === '已退件' ? hit[14] : '' };
 }
@@ -1776,7 +1778,7 @@ function registerList_(u, p) {
   requireAdmin_(u);
   var st = String(p.status || '');
   return regRows_().rows.filter(function (r) { return !st || r[10] === st; }).map(function (r) {
-    return { appId: r[0], name: r[1], idNo: r[2], birthday: r[3], phone: r[4], email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
+    return { appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: r[4], email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
       hasFiles: !!(r[7] || r[8] || r[9]) };
   }).reverse();
 }
@@ -1796,12 +1798,16 @@ function registerFile_(u, p) {
 function registerApprove_(u, p) {
   requireAdmin_(u);
   var empId = String(p.empId || '').trim();
-  if (!empId) throw new Error('請填員編');
-  if (!/^[A-Za-z0-9_-]{1,20}$/.test(empId)) throw new Error('員編只能是英數字、底線、連字號(最多 20 碼)');
+  if (empId && !/^[A-Za-z0-9_-]{1,20}$/.test(empId)) throw new Error('員編只能是英數字、底線、連字號(最多 20 碼)');
   var rec = regFind_(String(p.appId)), r = rec.r;
   if (r[10] !== '待審核') throw new Error('這件申請已處理過');
+  if (!empId) { // 沒填員編:先給暫編 TMP001…,之後可在「員工資料」改成正式員編
+    var used = {};
+    readObjs_(SHEETS.EMP).forEach(function (e) { used[String(e['員編'])] = true; });
+    for (var k = 1; k < 1000; k++) { empId = 'TMP' + ('00' + k).slice(-3); if (!used[empId]) break; }
+  }
   if (findEmp_(empId)) throw new Error('員編 ' + empId + ' 已存在');
-  var pwd = rocPwd_(String(r[3]));
+  var pwd = rocPwd_(r[3]);
   sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], r[4]]);
   var hh = hash_(pwd); // 同名在職、且密碼也完全相同(生日相同)才無法用姓名分辨,才需要提醒
   var same = readObjs_(SHEETS.EMP).filter(function (e) { return String(e['姓名']).trim() === r[1] && e['狀態'] === '在職' && e['密碼雜湊'] === hh; }).length;
