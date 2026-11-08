@@ -1045,6 +1045,7 @@ function signupApply_(u, p) {
   if (!unit || String(u['部門'] || '') !== unit) throw new Error('只能報名自己所屬單位的班');
   var slot = findSlot_(date, unit, shift);
   if (!slot) throw new Error('此日期未開放報名');
+  if (isBlacklisted_(unit, u['姓名'], u['Email'])) throw new Error('很抱歉,您目前無法報名此單位的班。如有疑問請洽人資。'); // 只擋「該公司」黑名單,其他公司不受影響
   var openAt = signupOpenAt_(unit, date, u['姓名'], priorityNames_());
   if (Date.now() < openAt) throw new Error('這週的班要到 ' + openAtLabel_(openAt) + ' 才開放您報名');
   var rows = readObjs_(SHEETS.SIGNUP), count = 0;
