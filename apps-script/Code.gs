@@ -1676,9 +1676,13 @@ var REG_FOLDER = '人事註冊證件';
 var REG_FILES = { front: { col: 8, label: '身分證正面' }, back: { col: 9, label: '身分證反面' }, bank: { col: 10, label: '存摺封面' } };
 
 /** 證件放在擁有者「我的雲端硬碟」根目錄的私人資料夾,不分享、不公開 */
-function regFolder_() {
-  var it = DriveApp.getRootFolder().getFoldersByName(REG_FOLDER);
-  return it.hasNext() ? it.next() : DriveApp.getRootFolder().createFolder(REG_FOLDER);
+function regFolder_() { // 放在「排班班表」資料夾底下(「公司」資料夾的上一層);舊的放在雲端硬碟根目錄的會自動搬過來
+  var parent = DriveApp.getFolderById(DRIVE_FOLDER_ID).getParents().next();
+  var it = parent.getFoldersByName(REG_FOLDER);
+  if (it.hasNext()) return it.next();
+  var old = DriveApp.getRootFolder().getFoldersByName(REG_FOLDER);
+  if (old.hasNext()) { var f = old.next(); f.moveTo(parent); return f; }
+  return parent.createFolder(REG_FOLDER);
 }
 
 function validTwId_(s) {
