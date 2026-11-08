@@ -1685,6 +1685,26 @@ function regFolder_() { // 放在「排班班表」資料夾底下(「公司」�
   return parent.createFolder(REG_FOLDER);
 }
 
+/** 試算表會把電話存成數字而吃掉開頭的 0,讀出來時補回 */
+function phoneFix_(v) {
+  var t = String(v == null ? '' : v).replace(/\D/g, '');
+  return /^9\d{8}$/.test(t) ? '0' + t : String(v == null ? '' : v);
+}
+/** 一次性:把已存的註冊申請與對應員工的電話補回開頭的 0,並改存成文字 */
+function regFixPhones_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('REG_PHONE_FIXED')) return;
+  var g = regRows_(), esh = sheet_(SHEETS.EMP), en = esh.getLastRow();
+  var eids = en > 1 ? esh.getRange(2, 1, en - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  g.rows.forEach(function (r, i) {
+    var fixed = phoneFix_(r[4]);
+    if (fixed !== String(r[4])) g.sh.getRange(i + 2, 5).setNumberFormat('@').setValue(fixed);
+    var ei = r[15] ? eids.indexOf(String(r[15])) : -1;
+    if (ei >= 0) esh.getRange(ei + 2, 11).setNumberFormat('@').setValue(fixed);
+  });
+  props.setProperty('REG_PHONE_FIXED', '1');
+}
+
 /** 證件依「公司 → 姓名」分資料夾,檔名:公司-姓名-證件名稱 */
 function regSub_(parent, name) {
   name = String(name || '未填').replace(/[\\\/]/g, '_');
@@ -1784,6 +1804,7 @@ function registerSubmit_(p) {
   }
   sh.appendRow([appId, name, idNo, birthday, phone, email, unit, saved.front, saved.back, saved.bank, '待審核', now_(), '', '', '', '']);
   sh.getRange(sh.getLastRow(), 4).setNumberFormat('@').setValue(birthday); // 生日存成文字,避免被轉成日期
+  sh.getRange(sh.getLastRow(), 5).setNumberFormat('@').setValue(phone); // 電話存成文字,保留開頭的 0
   notifyAdminReg_(name, unit, appId);
   return { appId: appId };
 }
@@ -1827,9 +1848,10 @@ function authorizeMail() {
 function registerList_(u, p) {
   requireAdmin_(u);
   try { regMigrate_(); } catch (e) { Logger.log('證件整理失敗:' + e.message); }
+  try { regFixPhones_(); } catch (e) { Logger.log('電話修正失敗:' + e.message); }
   var st = String(p.status || '');
   return regRows_().rows.filter(function (r) { return !st || r[10] === st; }).map(function (r) {
-    return { appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: r[4], email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
+    return { appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: phoneFix_(r[4]), email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
       hasFiles: !!(r[7] || r[8] || r[9]) };
   }).reverse();
 }
@@ -1859,7 +1881,8 @@ function registerApprove_(u, p) {
   }
   if (findEmp_(empId)) throw new Error('員編 ' + empId + ' 已存在');
   var pwd = rocPwd_(r[3]);
-  sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], r[4]]);
+  sheet_(SHEETS.EMP).appendRow([empId, r[1], r[6], '臨時PT', 'employee', '', today_(), hash_(pwd), '在職', r[5], phoneFix_(r[4])]);
+  sheet_(SHEETS.EMP).getRange(sheet_(SHEETS.EMP).getLastRow(), 11).setNumberFormat('@').setValue(phoneFix_(r[4]));
   var hh = hash_(pwd); // 同名在職、且密碼也完全相同(生日相同)才無法用姓名分辨,才需要提醒
   var same = readObjs_(SHEETS.EMP).filter(function (e) { return String(e['姓名']).trim() === r[1] && e['狀態'] === '在職' && e['密碼雜湊'] === hh; }).length;
   rec.sh.getRange(rec.row, 11).setValue('已通過');
