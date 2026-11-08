@@ -1762,6 +1762,35 @@ function fileExt_(bytes, mime) {
 }
 
 /** 公開:新人送出申請。p = {name, idNo, birthday(yyyy-mm-dd), phone, email, unit, consent, files:{front,back,bank:{data(base64)}}} */
+/** 班表檔裡的「黑名單」分頁(寶雅:黑名單-寶雅;鷹世服:黑名單),回傳 {姓名: true, 信箱: true};讀不到就回傳 null */
+var BLACKLIST_SHEET = { '寶雅': '黑名單-寶雅', '鷹世服': '黑名單' };
+function blacklistSet_(unit) {
+  var cfg = SYNC_UNITS[unit], want = BLACKLIST_SHEET[unit];
+  if (!cfg || !want) return {};
+  var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
+  if (!it.hasNext()) return null;
+  var f = it.next(), key = 'bl2_' + unit + '_' + f.getLastUpdated().getTime(), cache = CacheService.getScriptCache();
+  var hit = cache.get(key);
+  if (hit) return JSON.parse(hit);
+  var sh = readXlsxSheet_(f.getBlob(), function (n) { return n.trim() === want; }, 4);
+  var set = {};
+  if (sh) sh.rows.forEach(function (r, i) {
+    if (i === 0) return; // 標題列
+    var nm = String(r[1] || '').replace(/[\s\u3000]/g, '');
+    if (nm) set[nm] = true;
+    var em = String(r[2] || '').trim().toLowerCase();
+    if (/@/.test(em)) set[em] = true;
+  });
+  try { cache.put(key, JSON.stringify(set), 21600); } catch (e) { /* 太大就不快取 */ }
+  return set;
+}
+function isBlacklisted_(unit, name, email) {
+  var set;
+  try { set = blacklistSet_(unit); } catch (e) { Logger.log('黑名單讀取失敗:' + e.message); return false; }
+  if (!set) return false;
+  return !!(set[String(name).replace(/[\s\u3000]/g, '')] || set[String(email).trim().toLowerCase()]);
+}
+
 function registerSubmit_(p) {
   checkRate_('reg_all', 40, 3600); // 全站每小時最多 40 件,避免被灌爆雲端硬碟
   var name = String(p.name || '').trim(), idNo = String(p.idNo || '').trim().toUpperCase();
@@ -1775,6 +1804,7 @@ function registerSubmit_(p) {
   if (!/^09\d{8}$/.test(phone)) throw new Error('手機號碼請輸入 09 開頭共 10 碼');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Email 格式不正確');
   if (!SYNC_UNITS[unit]) throw new Error('請選擇申請單位');
+  if (isBlacklisted_(unit, name, email)) throw new Error('很抱歉,無法受理您的申請。如有疑問請洽人資。');
 
   var sh = sheet_(SHEETS.REG), n = sh.getLastRow();
   var rows = n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : [];
