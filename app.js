@@ -274,14 +274,7 @@
   function readFileB64(file, label) {
     return new Promise(function (resolve, reject) {
       if (!file) return reject(new Error('請上傳「' + label + '」'));
-      if (file.type === 'application/pdf') {
-        if (file.size > 4 * 1024 * 1024) return reject(new Error(label + ' PDF 太大(上限 4MB)'));
-        var fr = new FileReader();
-        fr.onload = function () { resolve(String(fr.result).split(',')[1]); };
-        fr.onerror = function () { reject(new Error(label + ' 讀取失敗')); };
-        return fr.readAsDataURL(file);
-      }
-      if (!/^image\//.test(file.type)) return reject(new Error(label + ' 只接受圖片或 PDF'));
+      if (file.type !== 'image/jpeg' && !/\.jpe?g$/i.test(file.name || '')) return reject(new Error(label + ' 只接受 JPG 圖檔,不能上傳 PDF 或其他格式'));
       var img = new Image(), url = URL.createObjectURL(file);
       img.onload = function () { // 縮圖壓成 JPEG,手機原圖動輒 5MB 以上
         var max = 1800, k = Math.min(1, max / Math.max(img.width, img.height));
@@ -290,7 +283,7 @@
         URL.revokeObjectURL(url);
         resolve(cv.toDataURL('image/jpeg', 0.85).split(',')[1]);
       };
-      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error(label + ' 無法讀取,請改用 JPG / PNG / PDF')); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error(label + ' 無法讀取,請改用 JPG 圖檔')); };
       img.src = url;
     });
   }
@@ -304,9 +297,9 @@
       field('rb', '出生日期', '', 'date', 'required') + field('rp', '手機號碼', '', 'tel', 'required maxlength="10" placeholder="09xxxxxxxx"') +
       field('re', 'Email', '', 'email', 'required') +
       '<div><label for="ru">申請單位</label><select id="ru" required><option value="">請選擇</option>' + units.map(function (u) { return '<option>' + u + '</option>'; }).join('') + '</select></div>' +
-      '<div><label for="f1">身分證正面(圖片或 PDF)</label><input id="f1" type="file" accept="image/*,application/pdf" required></div>' +
-      '<div><label for="f2">身分證反面(圖片或 PDF)</label><input id="f2" type="file" accept="image/*,application/pdf" required></div>' +
-      '<div><label for="f3">郵局或國泰世華銀行存摺封面(圖片或 PDF)</label><input id="f3" type="file" accept="image/*,application/pdf" required></div>' +
+      '<div><label for="f1">身分證正面(僅限 JPG 圖檔)</label><input id="f1" type="file" accept="image/jpeg,.jpg,.jpeg" required></div>' +
+      '<div><label for="f2">身分證反面(僅限 JPG 圖檔)</label><input id="f2" type="file" accept="image/jpeg,.jpg,.jpeg" required></div>' +
+      '<div><label for="f3">郵局或國泰世華銀行存摺封面(僅限 JPG 圖檔)</label><input id="f3" type="file" accept="image/jpeg,.jpg,.jpeg" required></div>' +
       '<label style="display:flex;gap:8px;align-items:flex-start"><input id="rc" type="checkbox" style="width:auto;margin-top:4px"><span class="hint" style="margin:0">我已閱讀並同意:所填資料與證件僅供東慧公司辦理人員報到、勞健保加退保及薪資轉帳使用,由人資專人保管,不會公開;審核完成後證件檔案會刪除。</span></label>' +
       '<button class="primary" type="submit">送出申請</button></form>' +
       '<p class="hint"><a href="#" id="rback">← 回登入</a></p></div>';

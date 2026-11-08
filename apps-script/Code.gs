@@ -1738,8 +1738,6 @@ function checkRate_(key, max, ttl) {
 function fileExt_(bytes, mime) {
   var h = bytes.slice(0, 4).map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
   if (h.indexOf('ffd8ff') === 0) return { ext: 'jpg', mime: 'image/jpeg' };
-  if (h === '89504e47') return { ext: 'png', mime: 'image/png' };
-  if (h === '25504446') return { ext: 'pdf', mime: 'application/pdf' };
   return null;
 }
 
@@ -1775,7 +1773,7 @@ function registerSubmit_(p) {
       if (String(f.data).length > 7 * 1024 * 1024) throw new Error(REG_FILES[k].label + '檔案太大(上限約 5MB)');
       var bytes = Utilities.base64Decode(String(f.data));
       var t = fileExt_(bytes);
-      if (!t) throw new Error(REG_FILES[k].label + '只接受 JPG、PNG 或 PDF');
+      if (!t) throw new Error(REG_FILES[k].label + '只接受 JPG 圖檔');
       var file = folder.createFile(Utilities.newBlob(bytes, t.mime, regFileName_(unit, name, k, t.ext)));
       created.push(file);
       saved[k] = file.getId();
