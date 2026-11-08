@@ -915,7 +915,7 @@
         field('f_hire', '到職日', e.hireDate || '', 'date') +
         '<div><label for="f_st">狀態</label><select id="f_st"><option' + (e.status === '在職' ? ' selected' : '') + '>在職</option><option' + (e.status === '離職' ? ' selected' : '') + '>離職</option></select></div>' +
         field('f_mail', 'Email', e.email || '', 'email') + field('f_tel', '電話', e.phone || '') +
-        (isNew ? field('f_pw', '初始密碼(至少 8 碼)', '', 'text', 'minlength="8" required') : '') +
+        (isNew ? field('f_pw', '初始密碼(至少 6 碼)', '', 'text', 'minlength="6" required') : '') +
         '<div class="full row"><button class="primary" type="submit">儲存</button><button type="button" data-close>取消</button></div></form>');
       $('#ef', d).onsubmit = function (ev) {
         ev.preventDefault();
