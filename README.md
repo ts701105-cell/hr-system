@@ -29,7 +29,7 @@ apps-script/Code.gs, appsscript.json                   後端(貼到 Apps Script
 ## 先試用(示範模式)
 
 `config.js` 的 `API_URL` 留空時,系統使用瀏覽器內建示範資料,不連線任何服務。
-示範帳號:`A001 / admin1234`(管理員)、`M001 / demo1234`(主管)、`E001 / demo1234`(員工)。
+示範帳號:`A001 / demo1234`(管理員)、`M001 / demo1234`(主管)、`E001 / demo1234`(員工)。
 
 ## 部署
 
@@ -39,7 +39,7 @@ apps-script/Code.gs, appsscript.json                   後端(貼到 Apps Script
 2. 選單「擴充功能 → Apps Script」,把 `apps-script/Code.gs` 的內容貼進去;
    「專案設定」勾選「顯示 appsscript.json」,貼入 `apps-script/appsscript.json`。
 3. 在編輯器執行函式 **`setup`**(第一次會要求授權)。會建立 7 個工作表與預設資料:
-   管理員 `A001`,密碼 `admin1234`。
+   管理員 `A001`,密碼是隨機產生的,只會顯示在「執行記錄」裡。
 4. 「部署 → 新增部署作業 → 網頁應用程式」:執行身分選「我」,存取權選「任何人」。
 5. 複製「網頁應用程式網址」(`https://script.google.com/macros/s/.../exec`)。
 
@@ -56,7 +56,7 @@ Repo → Settings → Pages → Source 選 `Deploy from a branch`,Branch 選 `ma
 
 ### 4. 首次設定
 
-1. 用 `A001 / admin1234` 登入,立刻到「修改密碼」。
+1. 用 `A001` 與 `setup` 執行記錄裡顯示的初始密碼登入,立刻到「修改密碼」。
 2. 「打卡地點」:新增公司地點(可在現場按「使用目前位置」),設定允許半徑。
 3. 「員工資料」:新增員工並指定主管。
 4. 「假別」「班別」可直接在試算表對應工作表修改。

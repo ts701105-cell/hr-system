@@ -33,7 +33,7 @@
     var year = new Date().getFullYear();
     return {
       emps: [
-        { id: 'A001', name: '王管理', dept: '人資部', title: '人事管理師', role: 'admin', manager: '', hireDate: year - 3 + '-04-01', status: '在職', email: '', phone: '', password: 'admin1234' },
+        { id: 'A001', name: '王管理', dept: '人資部', title: '人事管理師', role: 'admin', manager: '', hireDate: year - 3 + '-04-01', status: '在職', email: '', phone: '', password: 'demo1234' },
         { id: 'M001', name: '陳主管', dept: '門市部', title: '店長', role: 'manager', manager: '', hireDate: year - 2 + '-06-15', status: '在職', email: '', phone: '', password: 'demo1234' },
         { id: 'E001', name: '林小明', dept: '門市部', title: '門市人員', role: 'employee', manager: 'M001', hireDate: year - 1 + '-09-01', status: '在職', email: '', phone: '', password: 'demo1234' },
         { id: 'E002', name: '張小美', dept: '門市部', title: '門市人員', role: 'employee', manager: 'M001', hireDate: year + '-01-10', status: '在職', email: '', phone: '', password: 'demo1234' }

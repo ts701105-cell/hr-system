@@ -57,7 +57,10 @@ function setup() {
 
   var emp = ss.getSheetByName(SHEETS.EMP);
   if (emp.getLastRow() < 2) {
-    emp.appendRow(['A001', '系統管理員', '人資部', '人事管理師', 'admin', '', today_(), hash_('admin1234'), '在職', '', '']);
+    var initPwd = Utilities.getUuid().replace(/-/g, '').slice(0, 10); // 隨機初始密碼,只顯示在執行記錄,程式碼裡不放固定密碼
+    emp.appendRow(['A001', '系統管理員', '人資部', '人事管理師', 'admin', '', today_(), hash_(initPwd), '在職', '', '']);
+    props.setProperty('INIT_PWD_HASH', hash_(initPwd)); // 登入時用來判斷「還在用初始密碼,要強制改密碼」
+    Logger.log('管理員 A001 的初始密碼:' + initPwd + '(請立即登入並修改,看完後可清除執行記錄)');
   }
   var lt = ss.getSheetByName(SHEETS.LEAVE_TYPE);
   if (lt.getLastRow() < 2) {
@@ -80,7 +83,7 @@ function setup() {
   ss.getSheetByName(SHEETS.EMP).getRange('G:G').setNumberFormat('@');
   ss.getSheetByName(SHEETS.LEAVE).getRange('E:F').setNumberFormat('@');
   ss.getSheetByName(SHEETS.PUNCH).getRange('B:B').setNumberFormat('@');
-  Logger.log('初始化完成。預設管理員 A001 / admin1234,登入後請立即修改密碼。');
+  Logger.log('初始化完成。');
 }
 
 /* ============ 入口 ============ */
@@ -220,7 +223,7 @@ function finishLogin_(emp, ip, ua) {
   logLogin_(empId, emp['姓名'], '成功', ip, ua);
   var token = Utilities.getUuid() + Utilities.getUuid();
   cache.put('tok_' + token, empId, TOKEN_TTL);
-  return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: emp['密碼雜湊'] === hash_('admin1234'), lastLogin: last, ip: ip } };
+  return { ok: true, data: { token: token, user: publicUser_(emp), mustChange: !!PropertiesService.getScriptProperties().getProperty('INIT_PWD_HASH') && emp['密碼雜湊'] === PropertiesService.getScriptProperties().getProperty('INIT_PWD_HASH'), lastLogin: last, ip: ip } };
 }
 
 /** 同名同密碼的人選好單位後完成登入。p = {ticket, empId}(ticket 5 分鐘內有效、只能用一次) */

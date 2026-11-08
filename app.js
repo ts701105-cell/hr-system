@@ -236,7 +236,7 @@
       '<p class="hint"><b>帳號</b>:您的姓名。<b>初始密碼</b>:民國出生年月日共 7 碼(年 3 碼 + 月 2 碼 + 日 2 碼),例如民國 73 年 5 月 18 日請輸入 <b>0730518</b>。如忘記密碼請聯絡人資重設。</p>' +
       '<p class="hint"><b>新人?</b> <a href="#" id="goreg">新人註冊(上傳證件)</a> ｜ <a href="#" id="gostat">查詢審核進度</a></p>' +
       '<p class="hint" id="myip">正在取得您的 IP…</p><p class="hint">登入時系統會記錄時間與 IP 位址,供安全稽核使用。</p>' +
-      (API.demo ? '<p class="hint">示範帳號:管理員 A001 / admin1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
+      (API.demo ? '<p class="hint">示範帳號:管理員 A001 / demo1234;主管 M001 / demo1234;員工 E001 / demo1234。資料只存在這個瀏覽器。</p>' : '') + '</div>';
     getIP().then(function (ip) { var el = document.getElementById('myip'); if (el) el.textContent = ip ? '您目前的 IP:' + ip : '無法取得 IP(仍可登入,紀錄會標示為「未知」)'; });
     $('#goreg').onclick = function (e) { e.preventDefault(); renderRegister(); };
     $('#gostat').onclick = function (e) { e.preventDefault(); renderRegStatus(); };
