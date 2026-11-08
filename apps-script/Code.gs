@@ -1685,6 +1685,36 @@ function regFolder_() { // 放在「排班班表」資料夾底下(「公司」�
   return parent.createFolder(REG_FOLDER);
 }
 
+/** 證件依「公司 → 姓名」分資料夾,檔名:公司-姓名-證件名稱 */
+function regSub_(parent, name) {
+  name = String(name || '未填').replace(/[\\\/]/g, '_');
+  var it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+function regPersonFolder_(unit, name) { return regSub_(regSub_(regFolder_(), unit), name); }
+function regFileName_(unit, name, key, ext) { return unit + '-' + name + '-' + REG_FILES[key].label + (ext ? '.' + ext : ''); }
+/** 把已上傳的舊證件整理成新的資料夾與檔名(只做一次,管理員開啟註冊審核時自動執行) */
+function regMigrate_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('REG_MIGRATED_V2')) return;
+  var g = regRows_();
+  g.rows.forEach(function (r) {
+    var name = String(r[1]), unit = String(r[6]), dest = null;
+    Object.keys(REG_FILES).forEach(function (k) {
+      var id = r[REG_FILES[k].col - 1];
+      if (!id) return;
+      try {
+        var f = DriveApp.getFileById(id);
+        if (!dest) dest = regPersonFolder_(unit, name);
+        var m = f.getName().match(/\.([A-Za-z0-9]+)$/);
+        f.setName(regFileName_(unit, name, k, m ? m[1] : ''));
+        f.moveTo(dest);
+      } catch (e) { Logger.log('整理證件失敗 ' + id + ':' + e.message); }
+    });
+  });
+  props.setProperty('REG_MIGRATED_V2', '1');
+}
+
 function validTwId_(s) {
   if (!/^[A-Z][12]\d{8}$/.test(s)) return /^[A-Z][A-D89]\d{8}$/.test(s); // 居留證新舊格式只驗格式
   var map = { A: 10, B: 11, C: 12, D: 13, E: 14, F: 15, G: 16, H: 17, I: 34, J: 18, K: 19, L: 20, M: 21, N: 22, O: 35, P: 23, Q: 24, R: 25, S: 26, T: 27, U: 28, V: 29, W: 32, X: 30, Y: 31, Z: 33 };
@@ -1737,7 +1767,7 @@ function registerSubmit_(p) {
   if (emps.some(function (e) { return String(e['姓名']).trim() === name && e['密碼雜湊'] === hash_(rocPwd_(birthday)); })) throw new Error('系統已有相同姓名與生日的帳號,請直接登入或聯絡人資');
 
   var files = p.files || {}, saved = {}, appId = 'R' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMddHHmmss') + Math.floor(100 + Math.random() * 900);
-  var folder = regFolder_(), created = [];
+  var created = [], folder = regPersonFolder_(unit, name);
   try {
     Object.keys(REG_FILES).forEach(function (k) {
       var f = files[k];
@@ -1746,7 +1776,7 @@ function registerSubmit_(p) {
       var bytes = Utilities.base64Decode(String(f.data));
       var t = fileExt_(bytes);
       if (!t) throw new Error(REG_FILES[k].label + '只接受 JPG、PNG 或 PDF');
-      var file = folder.createFile(Utilities.newBlob(bytes, t.mime, appId + '_' + unit + '_' + name + '_' + k + '.' + t.ext));
+      var file = folder.createFile(Utilities.newBlob(bytes, t.mime, regFileName_(unit, name, k, t.ext)));
       created.push(file);
       saved[k] = file.getId();
     });
@@ -1798,6 +1828,7 @@ function authorizeMail() {
 }
 function registerList_(u, p) {
   requireAdmin_(u);
+  try { regMigrate_(); } catch (e) { Logger.log('證件整理失敗:' + e.message); }
   var st = String(p.status || '');
   return regRows_().rows.filter(function (r) { return !st || r[10] === st; }).map(function (r) {
     return { appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: r[4], email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
