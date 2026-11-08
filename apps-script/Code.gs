@@ -1742,7 +1742,7 @@ function registerSubmit_(p) {
       var bytes = Utilities.base64Decode(String(f.data));
       var t = fileExt_(bytes);
       if (!t) throw new Error(REG_FILES[k].label + '只接受 JPG、PNG 或 PDF');
-      var file = folder.createFile(Utilities.newBlob(bytes, t.mime, appId + '_' + name + '_' + k + '.' + t.ext));
+      var file = folder.createFile(Utilities.newBlob(bytes, t.mime, appId + '_' + unit + '_' + name + '_' + k + '.' + t.ext));
       created.push(file);
       saved[k] = file.getId();
     });
