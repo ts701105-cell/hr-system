@@ -48,6 +48,18 @@
     if (c) c.onclick = function () { dlg.close(); };
     return dlg;
   }
+  var NOTICES = { '寶雅': 'notice/baoya.png', '鷹世服': 'notice/yingshifu.png' };
+  function noticeLink(unit, label) {
+    var f = NOTICES[unit];
+    return f ? '<a href="' + f + '" download="' + esc(unit) + '-上班須知.png" target="_blank" rel="noopener">' + esc(label || '下載' + unit + '上班須知') + '</a>' : '';
+  }
+  function showNotice(unit) {
+    var f = NOTICES[unit];
+    if (!f) return;
+    openDialog('<h3>報名成功</h3><p>' + esc(unit) + '的上班須知(上班時間、交通、服裝與注意事項)請先看過或下載保存:</p>' +
+      '<p><img src="' + f + '" alt="' + esc(unit) + '上班須知" style="max-width:100%;max-height:50vh;border:1px solid #ddd;border-radius:6px"></p>' +
+      '<div class="row" style="gap:8px">' + noticeLink(unit, '下載上班須知') + '<div class="spacer"></div><button data-close>關閉</button></div>');
+  }
   function field(id, label, val, type, extra) {
     return '<div><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="' + (type || 'text') + '" value="' + esc(val) + '" ' + (extra || '') + '></div>';
   }
@@ -757,7 +769,7 @@
 
     if (!mgr) {
       var slots = await call('signup.open', { month: month });
-      var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;寶雅依開放時間報名(優先名單較早開放)。' : '您尚未設定所屬單位,請聯絡人資。';
+      var hint = user.dept ? '您的所屬單位:<b>' + esc(user.dept) + '</b>。同一天只能報名一個班;寶雅依開放時間報名(優先名單較早開放)。' + (noticeLink(user.dept) ? ' ' + noticeLink(user.dept) + '。' : '') : '您尚未設定所屬單位,請聯絡人資。';
       main.innerHTML = bar + '<p class="hint">' + hint + '</p><div class="card">' + table(['日期', '班別', '單位', '尚餘缺額', '狀態', ''], slots.map(function (s, i) {
         var full = s.quota <= 0;
         var st = s.mine === '已錄取' ? badge('已錄取') : s.mine ? badge('已報名') : full ? '<span class="badge bad">額滿</span>' : '';
@@ -778,6 +790,7 @@
             guard(async function () {
               await call(action, { date: s.date, unit: s.unit, shift: s.shift, reason: reason });
               toast(msg); viewSignup(main);
+              if (action === 'signup.apply') showNotice(s.unit);
             }, b);
           };
         });
