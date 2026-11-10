@@ -1509,7 +1509,7 @@ function parseScheduleRows_(rows, tz, shiftOf) {
       return;
     }
     var kindOf = function (ch) { return ch === '晚' || ch === '夜' ? '夜' : '早'; };
-    var gm = label.match(/^缺額[:：]?\s*(早|中|晚|夜)/);          // 「缺額」列 = 可出勤人數 − 需求人數,負數代表還缺幾個人
+    var gm = label.match(/^缺額[:：]?\s*(早|中|晚|夜)/) || (/^目前尚餘缺額/.test(label) ? [label, '早'] : null); // 鷹世服的列名是「目前尚餘缺額」(只有早班)          // 「缺額」列 = 可出勤人數 − 需求人數,負數代表還缺幾個人
     if (gm) {
       for (var c3 = 1; c3 < r.length; c3++) {
         var d3 = dates[c3 - 1], g = r[c3];
@@ -1647,21 +1647,12 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   var newXml = xlsxSetCell_(xml, plan.ref, remove ? '' : name);
   // 同步更新該區塊下方「可出勤人數」「缺額」兩列的快取值,讓班表和網頁的尚餘缺額維持一致
   var cl = plan.ref.match(/^([A-Z]+)(\d+)$/), delta = remove ? -1 : 1, hasAvail = false, hasGap = false;
-  var colIdx = 0; cl[1].split('').forEach(function (ch) { colIdx = colIdx * 26 + ch.charCodeAt(0) - 64; }); colIdx -= 1; // 0 起算欄位
-  var availNow = null, needNow = null, gapRow = -1;
   for (var ri = Number(cl[2]); ri < sheet.rows.length; ri++) {
     var lb = String(sheet.rows[ri][0] == null ? '' : sheet.rows[ri][0]).trim();
     if (lb === '日期') break;
-    var cv = sheet.rows[ri][colIdx];
-    if (!hasAvail && /可出勤人數/.test(lb)) { newXml = xlsxBumpCache_(newXml, cl[1] + (ri + 1), delta); hasAvail = true; if (typeof cv === 'number') availNow = cv + delta; }
-    else if (/(預計支援|需求)人數/.test(lb)) { if (Number(cv) > 0) needNow = Number(cv); }
-    else if (!hasGap && /缺額/.test(lb)) { gapRow = ri; hasGap = true; } // 鷹世服的列名是「目前尚餘缺額」,寶雅是「缺額」
-    if (hasAvail && hasGap && needNow != null) break;
-  }
-  if (gapRow >= 0) { // 缺額 = 可出勤人數 − 預計支援人數;有算得出來就直接寫正確值(連同之前累積的誤差一起校正),否則只加減 1
-    var gcur = sheet.rows[gapRow][colIdx], gref = cl[1] + (gapRow + 1);
-    if (availNow != null && needNow != null && typeof gcur === 'number') newXml = xlsxBumpCache_(newXml, gref, (availNow - needNow) - gcur);
-    else newXml = xlsxBumpCache_(newXml, gref, delta);
+    if (!hasAvail && /可出勤人數/.test(lb)) { newXml = xlsxBumpCache_(newXml, cl[1] + (ri + 1), delta); hasAvail = true; }
+    else if (!hasGap && /缺額/.test(lb)) { newXml = xlsxBumpCache_(newXml, cl[1] + (ri + 1), delta); hasGap = true; } // 鷹世服的列名是「目前尚餘缺額」,寶雅是「缺額」
+    if (hasAvail && hasGap) break;
   }
 
   // 備份原檔
@@ -1670,14 +1661,6 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   file.makeCopy('班表備份_' + cfg.file.replace(/\.xlsx$/, '') + '_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.xlsx', bdir);
 
   parts[pi] = Utilities.newBlob(newXml, 'application/xml', sheet.path);
-  parts.forEach(function (b, i) { // 開啟檔案時請 Excel / 試算表重新計算公式
-    if (b.getName() === 'xl/workbook.xml') {
-      var wx = b.getDataAsString('UTF-8');
-      if (!/<calcPr/.test(wx) || /<calcPr[^>]*fullCalcOnLoad/.test(wx)) return; // 沒有 calcPr 就不動,避免弄壞檔案結構
-      wx = wx.replace(/<calcPr/, '<calcPr fullCalcOnLoad="1"');
-      parts[i] = Utilities.newBlob(wx, 'application/xml', 'xl/workbook.xml');
-    }
-  });
   var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   var out = Utilities.zip(parts, file.getName()).setContentType(mime);
   var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files/' + file.getId() + '?uploadType=media', {
