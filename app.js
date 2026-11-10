@@ -421,7 +421,6 @@
   var ROUTES = [
     { path: 'punch', label: '打卡', roles: ['manager', 'admin'], view: viewPunch },
     { path: 'leave', label: '請假', roles: ['manager', 'admin'], view: viewLeave },
-    { path: 'schedule', label: '排班狀態', roles: ['employee', 'manager', 'admin'], view: viewSchedule },
     { path: 'signup', label: '排班報名', roles: ['employee', 'manager', 'admin'], view: viewSignup },
     { path: 'approvals', label: '假單簽核', roles: ['manager', 'admin'], group: '主管', view: viewApprovals },
     { path: 'attendance', label: '出勤報表', roles: ['manager', 'admin'], group: '主管', view: viewAttendance },
@@ -808,7 +807,7 @@
     var dirty = {};
 
     var syncBar = user.role === 'admin' ? '<div class="row" style="gap:8px;margin-bottom:8px"><button id="sync">從雲端硬碟同步 ' + esc(month) + ' 班表</button>' +
-      '<span class="hint">讀取寶雅、鷹世服班表,更新「排班狀態」與「名額」(這個按鈕只讀取班表,不會改動檔案)</span></div>' : '';
+      '<span class="hint">讀取寶雅、鷹世服班表,更新「名額」(這個按鈕只讀取班表,不會改動檔案)</span></div>' : '';
     var quotaCard = '<div class="card"><h3>名額設定</h3>' + syncBar + table(['日期', '班別', '單位', '已報名', '尚餘缺額'], qslots.map(function (s, i) {
       return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + '</td><td><input type="number" min="0" max="500" value="' + s.quota + '" data-q="' + i + '" style="width:80px"></td></tr>';
     }), '這個月還沒有設定名額') + '<div class="row" style="margin-top:8px"><div class="spacer"></div><button class="primary" id="qsv" disabled>儲存名額(填 0 = 移除)</button></div>' +
