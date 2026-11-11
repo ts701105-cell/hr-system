@@ -834,7 +834,9 @@
           try {
             var r = await call('sync.drive', { month: month, unit: unit });
             lines.push('<li><b>' + esc(unit) + '</b>:' + (r.note ? esc(r.note) : '排班 ' + r.shifts + ' 筆、名額 ' + r.slots + ' 筆(分頁 ' + esc(r.sheet) + ')') +
-              (r.unmatched && r.unmatched.length ? '<br><span style="color:#b45309">找不到對應員工、未寫入:' + esc(r.unmatched.join('、')) + '</span>' : '') + '</li>');
+              (r.unmatched && r.unmatched.length ? '<br><span style="color:#b45309">找不到對應員工、未寫入:' + esc(r.unmatched.join('、')) + '</span>' : '') +
+              (r.pruned && r.pruned.length ? '<br><span style="color:#b45309">班表上已移除、網站同步取消:' + esc(r.pruned.join('、')) + '</span>' : '') +
+              (r.pruneNote ? '<br><span style="color:#b45309">' + esc(r.pruneNote) + '</span>' : '') + '</li>');
           } catch (e) { bad = true; lines.push('<li><b>' + esc(unit) + '</b>:<span style="color:#b91c1c">' + esc(e.message) + '</span></li>'); }
         }
         openDialog('<h3>雲端硬碟同步結果</h3><ul>' + lines.join('') + '</ul><p class="hint">「找不到對應員工」請先把人加進員工資料(姓名要和班表一致)再同步一次。</p><div class="row"><div class="spacer"></div><button data-close>關閉</button></div>');

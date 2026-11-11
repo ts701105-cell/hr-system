@@ -1419,7 +1419,35 @@ function syncDriveUnit_(unit, month) {
   for (var k = 0; k < stale.length; k += 250) signupQuotaSave_(admin, { items: stale.slice(k, k + 250) });
   for (var i = 0; i < items.length; i += 400) shiftsSave_(admin, { items: items.slice(i, i + 400) });
   for (var j = 0; j < parsed.slots.length; j += 250) signupQuotaSave_(admin, { items: parsed.slots.slice(j, j + 250).map(function (q) { return { date: q.date, unit: unit, shift: q.shift, quota: q.quota }; }) });
-  return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched) };
+  var pr = pruneRemovedShifts_(unit, month, parsed.shifts); // 班表上被手動拿掉的人,網站的排班/報名也一併移除
+  return { unit: unit, month: month, sheet: parsed.sheetName, shifts: items.length, slots: parsed.slots.length, unmatched: Object.keys(unmatched), pruned: pr.removed, pruneNote: pr.note || '' };
+}
+
+/** 班表(Drive)為準:本月「明天以後」的班,網站「排班」有、班表上卻已經沒有這個名字的 → 刪掉排班,並刪掉同人同日同單位的報名紀錄。
+ *  名額不在這裡加減(同步時名額本來就依班表重算)。保護:班表讀不到任何人名、或要刪的超過 30 筆(可能是班表格式異常)就整個略過。 */
+function pruneRemovedShifts_(unit, month, sheetShifts) {
+  if (!sheetShifts.length) return { removed: [], note: '班表上讀不到任何人名,略過清理' };
+  var today = today_(), present = {};
+  sheetShifts.forEach(function (x) { present[x.date + '|' + x.name] = true; });
+  var sh = sheet_(SHEETS.SHIFT), n = sh.getLastRow();
+  if (n < 2) return { removed: [] };
+  var vals = sh.getRange(2, 1, n - 1, 6).getValues(), cand = [];
+  vals.forEach(function (r, i) {
+    var d = dstr_(r[0]);
+    if (d > today && d.slice(0, 7) === month && String(r[3]).indexOf(unit) === 0 && !present[d + '|' + String(r[2]).trim()]) cand.push({ row: i + 2, date: d, id: String(r[1]), name: String(r[2]) });
+  });
+  if (!cand.length) return { removed: [] };
+  if (cand.length > 30) return { removed: [], note: '要清理的有 ' + cand.length + ' 筆,超過 30 筆,可能是班表格式異常,已略過' };
+  for (var i = cand.length - 1; i >= 0; i--) sh.deleteRow(cand[i].row); // 由後往前刪,列號才不會跑掉
+  var ss = sheet_(SHEETS.SIGNUP), m = ss.getLastRow();
+  if (m > 1) {
+    var rows = ss.getRange(2, 1, m - 1, 7).getValues();
+    for (var k = rows.length - 1; k >= 0; k--) {
+      var rd = dstr_(rows[k][0]), rid = String(rows[k][1]);
+      if (rows[k][3] === unit && cand.some(function (c) { return c.date === rd && c.id === rid; })) ss.deleteRow(k + 2);
+    }
+  }
+  return { removed: cand.map(function (c) { return c.date + ' ' + c.name; }) };
 }
 
 /** 直接讀 .xlsx(zip + XML),不需要 Drive 進階服務。回傳 {name, rows} 或 null(找不到分頁)。
