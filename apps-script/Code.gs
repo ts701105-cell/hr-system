@@ -112,7 +112,7 @@ function doPost(e) {
     var handler = ROUTES[action];
     if (!handler) return json_({ ok: false, error: '未知的操作: ' + action });
 
-    lock.waitLock(20000);
+    if (!READ_ONLY[action]) lock.waitLock(20000); // 只讀資料的動作不用排隊等鎖,多人同時開頁面才不會互相卡住
     var data = handler(user, p);
     return json_({ ok: true, data: data });
   } catch (err) {
@@ -121,6 +121,9 @@ function doPost(e) {
     try { lock.releaseLock(); } catch (x) { /* 未持有鎖 */ }
   }
 }
+
+/** 只讀取、不寫入的動作(不需要鎖) */
+var READ_ONLY = { 'me': 1, 'signup.open': 1, 'signup.list': 1, 'shifts.list': 1, 'locations.list': 1, 'leave.my': 1, 'leave.balance': 1, 'punch.my': 1, 'login.my': 1, 'cancel.log': 1, 'login.log': 1, 'employees.list': 1 };
 
 var ROUTES = {
   'me': function (u) { return publicUser_(u); },
@@ -244,6 +247,8 @@ function loginPick_(p) {
  *  同名又同密碼(例如同一個人在寶雅和鷹世服各有一筆員編)會全部回傳,讓登入時選單位。
  *  回傳陣列;找不到人時回傳空陣列;姓名對但密碼都不對時回傳第一位(供登入失敗時記錄)。 */
 function findLoginEmps_(account, pwd) {
+  var direct = findEmp_(account); // 用員編登入(最常見)時,只讀那一列就好
+  if (direct && direct['狀態'] === '在職') return [direct];
   var list = readObjs_(SHEETS.EMP).filter(function (e) { return e['狀態'] === '在職'; });
   var byId = list.filter(function (e) { return String(e['員編']) === account; })[0];
   if (byId) return [byId];
@@ -1992,21 +1997,22 @@ function sheet_(name) {
   return sh;
 }
 
+function rowToObj_(name, row) {
+  var head = HEADERS[name], o = {};
+  head.forEach(function (h, i) {
+    var v = row[i];
+    if (v instanceof Date) v = Utilities.formatDate(v, 'Asia/Taipei', h.indexOf('時間') >= 0 ? 'yyyy-MM-dd HH:mm:ss' : 'yyyy-MM-dd');
+    o[h] = v;
+  });
+  return o;
+}
+
 function readObjs_(name) {
   var sh = sheet_(name);
   var n = sh.getLastRow();
   if (n < 2) return [];
-  var head = HEADERS[name];
-  var vals = sh.getRange(2, 1, n - 1, head.length).getValues();
-  return vals.map(function (row) {
-    var o = {};
-    head.forEach(function (h, i) {
-      var v = row[i];
-      if (v instanceof Date) v = Utilities.formatDate(v, 'Asia/Taipei', h.indexOf('時間') >= 0 ? 'yyyy-MM-dd HH:mm:ss' : 'yyyy-MM-dd');
-      o[h] = v;
-    });
-    return o;
-  });
+  var vals = sh.getRange(2, 1, n - 1, HEADERS[name].length).getValues();
+  return vals.map(function (row) { return rowToObj_(name, row); });
 }
 
 function findRow_(sh, col, value) {
@@ -2017,10 +2023,10 @@ function findRow_(sh, col, value) {
   return 0;
 }
 
-function findEmp_(id) {
-  var list = readObjs_(SHEETS.EMP);
-  for (var i = 0; i < list.length; i++) if (String(list[i]['員編']) === String(id)) return list[i];
-  return null;
+function findEmp_(id) { // 每個請求都會呼叫:只讀「員編」欄找到列號,再只讀那一列,不用把整張員工表讀進來
+  var sh = sheet_(SHEETS.EMP), row = findRow_(sh, 1, id);
+  if (!row) return null;
+  return rowToObj_(SHEETS.EMP, sh.getRange(row, 1, 1, HEADERS[SHEETS.EMP].length).getValues()[0]);
 }
 
 function setEmpField_(id, field, value) {
