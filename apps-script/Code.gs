@@ -1012,12 +1012,12 @@ function priorityNames_() {
 }
 
 /** 寶雅某一天的班,這位員工從什麼時候開始可以報名(毫秒)。
- *  排班週 = 週一到週日。優先名單:排班週的上個星期一 0:00 開放;其他人:排班週前一個星期六 4:00 開放。
- *  例:11/9-11/15 這週,優先名單 11/2 0:00,其他人 11/7 4:00。其他單位不限制,回傳 0。 */
+ *  排班週 = 週一到週日。優先名單:排班週的上個星期一 0:00 開放;其他人:排班週前一個星期六 8:00 開放。
+ *  例:11/9-11/15 這週,優先名單 11/2 0:00,其他人 11/7 8:00。其他單位不限制,回傳 0。 */
 function signupOpenAt_(unit, date, name, prio) {
   if (unit !== '寶雅') return 0;
   var monday = new Date(weekKey_(date) + 'T00:00:00+08:00').getTime();
-  return prio[String(name).trim()] ? monday - 7 * 86400000 : monday - 2 * 86400000 + 4 * 3600000;
+  return prio[String(name).trim()] ? monday - 7 * 86400000 : monday - 2 * 86400000 + 8 * 3600000;
 }
 
 function openAtLabel_(ms) {
