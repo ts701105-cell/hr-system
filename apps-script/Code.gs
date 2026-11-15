@@ -1077,6 +1077,7 @@ function signupApply_(u, p) {
   shs.getRange(srow, 1, 1, 6).setNumberFormat('@').setValues([[date, u['員編'], u['姓名'], st.name, st.start, st.end]]);
   sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已錄取', now_()]);
   slotAdjust_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
+  notifyAdminShift_('報班', u['姓名'], unit, date, shift, '');
   return true;
 }
 
@@ -1204,6 +1205,18 @@ function recordCancel_(u, date, unit, shift, reason, source) {
   try {
     appendCancelXlsx_([source, t, u['姓名'], date, unit + ' ' + shift, reason, ip, ltime]);
   } catch (e) { Logger.log('取消排名.xlsx 寫入失敗:' + e.message); } // 失敗不影響取消本身,紀錄仍留在「取消紀錄」分頁
+  notifyAdminShift_('取消班別', u['姓名'], unit, date, shift, reason);
+}
+
+/** 有人報班或取消班別就寄信給部署者(自己);寄信失敗不影響報班/取消本身。信中不放身分證等個資 */
+function notifyAdminShift_(kind, name, unit, date, shift, reason) {
+  try {
+    var to = Session.getEffectiveUser().getEmail();
+    if (!to) return;
+    MailApp.sendEmail(to, '【人事系統】' + kind + ':' + name + '(' + unit + ' ' + date + ' ' + shift + ')',
+      '姓名:' + name + '\n動作:' + kind + '\n單位:' + unit + '\n日期:' + date + '\n班別:' + shift +
+      (reason ? '\n取消原因:' + reason : '') + '\n時間:' + now_() + '\n\n(此信由系統自動寄出)');
+  } catch (e) { Logger.log('報班/取消通知信寄送失敗:' + e.message); }
 }
 
 function xmlEsc_(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ''); }
