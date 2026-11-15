@@ -639,31 +639,7 @@
       field('ld', '天數(0.5 為單位)', '1', 'number', 'min="0.5" step="0.5" required') +
       '<div class="full"><label for="lr">事由</label><textarea id="lr" rows="2"></textarea></div>' +
       '<div class="full"><button class="primary" type="submit">送出申請</button></div></form></div>' +
-      '<div class="card"><h3>我的假單</h3><div id="ll"></div></div>' +
-      (user.role === 'admin' ? '<div class="card"><h3>加班補休額度登錄(管理員)</h3><p class="hint">只有被登錄額度的人才能申請「補休」;扣回請填負數。</p><form id="cf" class="form">' +
-        '<div><label for="ce">員工</label><select id="ce"></select></div>' +
-        field('cd', '補休天數(0.5 為單位)', '1', 'number', 'step="0.5" required') +
-        '<div class="full"><label for="cr">事由(例如:11/15 加班 8 小時)</label><input id="cr"></div>' +
-        '<div class="full"><button class="primary" type="submit">登錄補休額度</button></div></form><div id="cl"></div></div>' : '');
-
-    if (user.role === 'admin') {
-      var compEmps = (await call('employees.list')).filter(function (e) { return e.status === '在職'; });
-      $('#ce').innerHTML = compEmps.map(function (e) { return '<option value="' + esc(e.id) + '">' + esc(e.name) + '(' + esc(e.id) + ')</option>'; }).join('');
-      var drawComp = async function () {
-        var rows = await call('comp.list');
-        $('#cl').innerHTML = table(['時間', '員工', '天數', '事由', '登錄人'], rows.map(function (r) {
-          return '<tr><td>' + esc(r.at) + '</td><td>' + esc(r.name) + '(' + esc(r.empId) + ')</td><td>' + esc(r.days) + '</td><td class="wrap">' + esc(r.reason) + '</td><td>' + esc(r.by) + '</td></tr>';
-        }), '還沒有登錄紀錄');
-      };
-      drawComp();
-      $('#cf').onsubmit = function (e) {
-        e.preventDefault();
-        guard(async function () {
-          await call('comp.grant', { empId: val('ce'), days: Number(val('cd')), reason: val('cr') });
-          toast('已登錄'); viewLeave(main);
-        }, $('#cf button'));
-      };
-    }
+      '<div class="card"><h3>我的假單</h3><div id="ll"></div></div>';
 
     function autoDays() {
       var a = new Date(val('ls')), b = new Date(val('le'));

@@ -18,8 +18,7 @@ var SHEETS = {
   REG: '註冊申請',
   CANCEL: '取消紀錄',
   PRIORITY: '優先名單',
-  MFA: '二階段',
-  COMP: '補休額度'
+  MFA: '二階段'
 };
 
 var HEADERS = {
@@ -35,7 +34,6 @@ var HEADERS = {
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
   '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因', '來源', '登入IP', '登入時間'],
   '優先名單': ['姓名', '說明'],
-  '補休額度': ['時間', '員編', '姓名', '天數', '事由', '登錄人'],
   '二階段': ['員編', '密鑰', '狀態', '備用碼雜湊', '最後使用週期', '啟用時間'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
@@ -125,7 +123,7 @@ function doPost(e) {
 }
 
 /** 只讀取、不寫入的動作(不需要鎖) */
-var READ_ONLY = { 'me': 1, 'signup.open': 1, 'signup.list': 1, 'shifts.list': 1, 'locations.list': 1, 'leave.my': 1, 'leave.balance': 1, 'punch.my': 1, 'login.my': 1, 'cancel.log': 1, 'login.log': 1, 'employees.list': 1, 'comp.list': 1 };
+var READ_ONLY = { 'me': 1, 'signup.open': 1, 'signup.list': 1, 'shifts.list': 1, 'locations.list': 1, 'leave.my': 1, 'leave.balance': 1, 'punch.my': 1, 'login.my': 1, 'cancel.log': 1, 'login.log': 1, 'employees.list': 1 };
 
 var ROUTES = {
   'me': function (u) { return publicUser_(u); },
@@ -141,8 +139,6 @@ var ROUTES = {
   'employees.import': employeesImport_,
   'leave.types': leaveTypes_,
   'leave.balance': leaveBalance_,
-  'comp.grant': compGrant_,
-  'comp.list': compList_,
   'leave.apply': leaveApply_,
   'leave.my': leaveMy_,
   'leave.cancel': leaveCancel_,
@@ -489,44 +485,17 @@ function leaveTypes_() {
   return readObjs_(SHEETS.LEAVE_TYPE).map(function (r) { return { name: r['假別'], quota: r['年度額度(天)'] === '' ? null : Number(r['年度額度(天)']) }; });
 }
 
-function compGranted_(empId) {
-  var sum = 0;
-  readObjs_(SHEETS.COMP).forEach(function (r) { if (String(r['員編']) === String(empId)) sum += Number(r['天數']) || 0; });
-  return sum;
-}
-
 function leaveBalance_(u) {
   var year = new Date().getFullYear();
-  var used = {}, compUsed = 0;
+  var used = {};
   readObjs_(SHEETS.LEAVE).forEach(function (r) {
-    if (r['員編'] !== u['員編'] || (r['狀態'] !== '核准' && r['狀態'] !== '待簽核')) return;
-    if (r['假別'] === '補休') compUsed += Number(r['天數']); // 補休額度不分年度,累計扣除
-    if (String(r['開始日期']).slice(0, 4) === String(year)) used[r['假別']] = (used[r['假別']] || 0) + Number(r['天數']);
-  });
-  var granted = compGranted_(u['員編']);
-  return leaveTypes_().map(function (t) {
-    if (t.name === '補休') { // 補休只能使用管理員登錄的加班補休額度;沒有額度的人餘額為 0
-      return { type: t.name, quota: granted, used: compUsed, remain: Math.round((granted - compUsed) * 2) / 2 };
+    if (r['員編'] === u['員編'] && (r['狀態'] === '核准' || r['狀態'] === '待簽核') && String(r['開始日期']).slice(0, 4) === String(year)) {
+      used[r['假別']] = (used[r['假別']] || 0) + Number(r['天數']);
     }
+  });
+  return leaveTypes_().map(function (t) {
     return { type: t.name, quota: t.quota, used: used[t.name] || 0, remain: t.quota === null ? null : t.quota - (used[t.name] || 0) };
   });
-}
-
-/* 管理員登錄加班補休額度(天,可為 0.5 單位;扣回請填負數) */
-function compGrant_(u, p) {
-  requireAdmin_(u);
-  var days = Number(p.days);
-  if (!p.empId || !days || days * 2 !== Math.round(days * 2)) throw new Error('請選擇員工,天數以 0.5 為單位(不可為 0)');
-  var emp = findEmp_(String(p.empId));
-  if (!emp) throw new Error('找不到員工');
-  if (compGranted_(p.empId) + days < 0) throw new Error('扣回後補休額度不可小於 0');
-  sheet_(SHEETS.COMP).appendRow([now_(), String(emp['員編']), emp['姓名'], days, p.reason || '', u['姓名']]);
-  return true;
-}
-
-function compList_(u) {
-  requireAdmin_(u);
-  return readObjs_(SHEETS.COMP).map(function (r) { return { at: r['時間'], empId: r['員編'], name: r['姓名'], days: Number(r['天數']), reason: r['事由'], by: r['登錄人'] }; }).reverse();
 }
 
 function leaveApply_(u, p) {
@@ -2016,7 +1985,7 @@ function registerPurge_(u, p) {
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY || name === SHEETS.MFA || name === SHEETS.COMP)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY || name === SHEETS.MFA)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
