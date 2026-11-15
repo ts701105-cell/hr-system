@@ -1797,16 +1797,16 @@ function fileExt_(bytes, mime) {
 
 /** 公開:新人送出申請。p = {name, idNo, birthday(yyyy-mm-dd), phone, email, unit, consent, files:{front,back,bank:{data(base64)}}} */
 /** 班表檔裡的「黑名單」分頁(寶雅:黑名單-寶雅;鷹世服:黑名單),回傳 {姓名: true, 信箱: true};讀不到就回傳 null */
-var BLACKLIST_SHEET = { '寶雅': '黑名單-寶雅', '鷹世服': '黑名單' };
+var BLACKLIST_SHEET = { '寶雅': ['黑名單-寶雅', '黑名單'], '鷹世服': ['黑名單'] }; // 每個班表檔各有自己的黑名單分頁;寶雅班表檔裡的分頁目前就叫「黑名單」
 function blacklistSet_(unit) {
   var cfg = SYNC_UNITS[unit], want = BLACKLIST_SHEET[unit];
   if (!cfg || !want) return {};
   var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
   if (!it.hasNext()) return null;
-  var f = it.next(), key = 'bl2_' + unit + '_' + f.getLastUpdated().getTime(), cache = CacheService.getScriptCache();
+  var f = it.next(), key = 'bl3_' + unit + '_' + f.getLastUpdated().getTime(), cache = CacheService.getScriptCache();
   var hit = cache.get(key);
   if (hit) return JSON.parse(hit);
-  var sh = readXlsxSheet_(f.getBlob(), function (n) { return n.trim() === want; }, 4);
+  var sh = readXlsxSheet_(f.getBlob(), function (n) { return want.indexOf(n.trim()) >= 0; }, 4);
   var set = {};
   if (sh) sh.rows.forEach(function (r, i) {
     if (i === 0) return; // 標題列
