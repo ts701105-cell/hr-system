@@ -18,7 +18,8 @@ var SHEETS = {
   REG: '註冊申請',
   CANCEL: '取消紀錄',
   PRIORITY: '優先名單',
-  MFA: '二階段'
+  MFA: '二階段',
+  BLK: '黑名單快取'
 };
 
 var HEADERS = {
@@ -34,6 +35,7 @@ var HEADERS = {
   '報名': ['日期', '員編', '姓名', '單位', '班別', '狀態', '報名時間'],
   '取消紀錄': ['時間', '日期', '員編', '姓名', '單位', '班別', '原因', '來源', '登入IP', '登入時間'],
   '優先名單': ['姓名', '說明'],
+  '黑名單快取': ['單位', '姓名或信箱', '更新時間'],
   '二階段': ['員編', '密鑰', '狀態', '備用碼雜湊', '最後使用週期', '啟用時間'],
   '註冊申請': ['申請編號', '姓名', '身分證字號', '生日', '電話', 'Email', '單位', '證件正面', '證件反面', '存摺', '狀態', '申請時間', '審核人', '審核時間', '備註', '員編']
 };
@@ -1798,15 +1800,13 @@ function fileExt_(bytes, mime) {
 /** 公開:新人送出申請。p = {name, idNo, birthday(yyyy-mm-dd), phone, email, unit, consent, files:{front,back,bank:{data(base64)}}} */
 /** 班表檔裡的「黑名單」分頁(寶雅:黑名單-寶雅;鷹世服:黑名單),回傳 {姓名: true, 信箱: true};讀不到就回傳 null */
 var BLACKLIST_SHEET = { '寶雅': ['黑名單-寶雅', '黑名單'], '鷹世服': ['黑名單'] }; // 每個班表檔各有自己的黑名單分頁;寶雅班表檔裡的分頁目前就叫「黑名單」
-function blacklistSet_(unit) {
+/** 直接讀班表 .xlsx 的黑名單分頁(較慢,約數秒);只給每天排程和手動更新使用。讀不到檔案回傳 null */
+function blacklistLive_(unit) {
   var cfg = SYNC_UNITS[unit], want = BLACKLIST_SHEET[unit];
   if (!cfg || !want) return {};
   var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
   if (!it.hasNext()) return null;
-  var f = it.next(), key = 'bl3_' + unit + '_' + f.getLastUpdated().getTime(), cache = CacheService.getScriptCache();
-  var hit = cache.get(key);
-  if (hit) return JSON.parse(hit);
-  var sh = readXlsxSheet_(f.getBlob(), function (n) { return want.indexOf(n.trim()) >= 0; }, 4);
+  var sh = readXlsxSheet_(it.next().getBlob(), function (n) { return want.indexOf(n.trim()) >= 0; }, 4);
   var set = {};
   if (sh) sh.rows.forEach(function (r, i) {
     if (i === 0) return; // 標題列
@@ -1815,9 +1815,55 @@ function blacklistSet_(unit) {
     var em = String(r[2] || '').trim().toLowerCase();
     if (/@/.test(em)) set[em] = true;
   });
-  try { cache.put(key, JSON.stringify(set), 21600); } catch (e) { /* 太大就不快取 */ }
   return set;
 }
+
+/** 平常檢查用:讀「黑名單快取」分頁(每天 6 點由排程從班表檔更新);這個單位還沒有快取資料時才改讀班表檔 */
+function blacklistSet_(unit) {
+  var sh = sheet_(SHEETS.BLK), n = sh.getLastRow(), set = {}, found = false;
+  if (n > 1) sh.getRange(2, 1, n - 1, 2).getValues().forEach(function (r) {
+    if (String(r[0]) === unit) { found = true; set[String(r[1])] = true; }
+  });
+  if (found) return set;
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('blk_done_' + unit)) return {}; // 已更新過但名單是空的
+  return blacklistLive_(unit);
+}
+
+/** 每天 6 點自動執行(也可手動執行):把兩個班表檔的黑名單分頁讀進「黑名單快取」。班表檔讀不到時保留舊資料 */
+function refreshBlacklist() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(60000)) return;
+  try {
+    var sh = sheet_(SHEETS.BLK), props = PropertiesService.getScriptProperties(), result = {};
+    Object.keys(BLACKLIST_SHEET).forEach(function (unit) {
+      var set;
+      try { set = blacklistLive_(unit); } catch (e) { Logger.log(unit + ' 黑名單讀取失敗(保留舊資料): ' + e.message); return; }
+      if (!set) { Logger.log(unit + ' 找不到班表檔(保留舊資料)'); return; }
+      var n = sh.getLastRow(), keep = [];
+      if (n > 1) sh.getRange(2, 1, n - 1, 3).getValues().forEach(function (r) { if (String(r[0]) !== unit) keep.push(r); });
+      var stamp = now_(), fresh = Object.keys(set).map(function (k) { return [unit, k, stamp]; });
+      var all = keep.concat(fresh);
+      if (n > 1) sh.getRange(2, 1, n - 1, 3).clearContent();
+      if (all.length) sh.getRange(2, 1, all.length, 3).setNumberFormat('@').setValues(all);
+      props.setProperty('blk_done_' + unit, stamp);
+      result[unit] = fresh.length;
+    });
+    Logger.log('黑名單已更新:' + JSON.stringify(result));
+    return result;
+  } finally {
+    try { lock.releaseLock(); } catch (x) { /* 未持有鎖 */ }
+  }
+}
+
+/** 在編輯器執行一次:建立「每天早上 6 點(台北時間)」自動更新黑名單的排程,並立刻更新一次。重複執行不會建立重複的排程 */
+function installBlacklistTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'refreshBlacklist') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('refreshBlacklist').timeBased().everyDays(1).atHour(6).inTimezone('Asia/Taipei').create();
+  Logger.log('已設定每天 6 點更新黑名單');
+  return refreshBlacklist();
+}
+
 function isBlacklisted_(unit, name, email) {
   var set;
   try { set = blacklistSet_(unit); } catch (e) { Logger.log('黑名單讀取失敗:' + e.message); return false; }
@@ -1985,7 +2031,7 @@ function registerPurge_(u, p) {
 function sheet_(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(name);
-  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY || name === SHEETS.MFA)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
+  if (!sh && (name === SHEETS.LOGIN || name === SHEETS.SLOT || name === SHEETS.SIGNUP || name === SHEETS.REG || name === SHEETS.CANCEL || name === SHEETS.PRIORITY || name === SHEETS.MFA || name === SHEETS.BLK)) { // 這幾張表第一次使用時自動建立,不需要重新執行 setup()
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
