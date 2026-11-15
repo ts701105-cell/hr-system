@@ -1874,10 +1874,11 @@ function registerSubmit_(p) {
   var sh = sheet_(SHEETS.REG), n = sh.getLastRow();
   var rows = n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : [];
   rows.forEach(function (r) {
-    if (String(r[2]) === idNo && (r[10] === '待審核' || r[10] === '已通過')) throw new Error(r[10] === '待審核' ? '您已送出申請,正在審核中,請用「查詢進度」確認' : '您的申請已通過,請直接登入');
+    // 同一個人可以再申請其他單位(例如已有鷹世服帳號,再申請寶雅);只擋「同一單位」重複申請
+    if (String(r[2]) === idNo && String(r[6]) === unit && (r[10] === '待審核' || r[10] === '已通過')) throw new Error(r[10] === '待審核' ? '您已送出「' + unit + '」的申請,正在審核中,請用「查詢進度」確認' : '您在「' + unit + '」的申請已通過,請直接登入');
   });
   var emps = readObjs_(SHEETS.EMP);
-  if (emps.some(function (e) { return String(e['姓名']).trim() === name && e['密碼雜湊'] === hash_(rocPwd_(birthday)); })) throw new Error('系統已有相同姓名與生日的帳號,請直接登入或聯絡人資');
+  if (emps.some(function (e) { return String(e['姓名']).trim() === name && e['密碼雜湊'] === hash_(rocPwd_(birthday)) && String(e['部門']).trim() === unit; })) throw new Error('系統已有您在「' + unit + '」的帳號,請直接登入或聯絡人資');
 
   var files = p.files || {}, saved = {}, appId = 'R' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMddHHmmss') + Math.floor(100 + Math.random() * 900);
   var created = [], folder = regPersonFolder_(unit, name);
