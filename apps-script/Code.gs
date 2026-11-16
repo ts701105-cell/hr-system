@@ -1080,7 +1080,7 @@ function signupApply_(u, p) {
   if (srow < 0) srow = sn + 1;
   shs.getRange(srow, 1, 1, 6).setNumberFormat('@').setValues([[date, u['員編'], u['姓名'], st.name, st.start, st.end]]);
   sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已錄取', now_()]);
-  slotAdjust_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
+  slotAdjustAny_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
   notifyAdminShift_('報班', u['姓名'], unit, date, shift, '');
   return true;
 }
@@ -1100,7 +1100,7 @@ function signupCancel_(u, p) {
       if (r[5] === '已錄取') return shiftsCancelOwn_(u, { date: String(p.date), reason: reason }, '排班報名'); // 上班日當天以前可取消
       try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
-      slotAdjust_(String(p.date), p.unit, p.shift, 1);
+      slotAdjustAny_(String(p.date), p.unit, p.shift, 1);
       recordCancel_(u, String(p.date), p.unit, p.shift, reason, '排班報名');
       return true;
     }
@@ -1134,7 +1134,7 @@ function shiftsCancelOwn_(u, p, src) {
       if (dstr_(rows[i][0]) === date && String(rows[i][1]) === String(u['員編'])) ss.deleteRow(i + 2);
     }
   }
-  slotAdjust_(date, unit, shift, 1);
+  slotAdjustAny_(date, unit, shift, 1);
   recordCancel_(u, date, unit, shift, reason, src || '排班狀況');
   return true;
 }
@@ -1357,9 +1357,8 @@ var DRIVE_FOLDER_ID = '1UDKmu8_Ns_4PlZu6Q771iX55PMZP0HaR';
 var SYNC_UNITS = {
   '寶雅': { file: '寶雅班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '寶雅夜班' : '寶雅早班'; } },
   '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function () { return '鷹世服早班'; } },
-  // 智崴科技:班表格式與寶雅相同(早 8:00-17:00、夜 20:00-5:00);第一次同步時自動建立缺少的班別
-  '智崴科技': { file: '智崴科技班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '智崴科技夜班' : '智崴科技早班'; },
-    shiftDefs: [['智崴科技早班', '08:00', '17:00'], ['智崴科技夜班', '20:00', '05:00']] }
+  // 智崴科技:班表依「店 + 班別代號」一列一列排(i-Ride 體驗中心、VOLARE 大港店),缺額是「缺額:店名」;layout:'store' 用 parseStoreRows_ 解析
+  '智崴科技': { file: '智崴科技班表.xlsx', layout: 'store' }
 };
 
 function syncDriveRoute_(u, p) {
@@ -1409,13 +1408,13 @@ function syncDriveUnit_(unit, month) {
   var want = month.replace('-', '');
   var sheetRows = readXlsxSheet_(src.getBlob(), function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
   if (!sheetRows) return { unit: unit, month: month, sheet: '', shifts: 0, slots: 0, unmatched: [], note: '班表檔裡沒有 ' + month + ' 的分頁' };
-  var parsed = parseScheduleRows_(sheetRows.rows, 'Asia/Taipei', cfg.shiftOf);
+  var parsed = cfg.layout === 'store' ? parseStoreRows_(unit, sheetRows.rows) : parseScheduleRows_(sheetRows.rows, 'Asia/Taipei', cfg.shiftOf);
   parsed.sheetName = sheetRows.name;
 
   // 寫入前先確認用到的班別都已在「班別」工作表建立,避免寫到一半才報錯
   var have = {}, need = {};
   shiftTypes_().forEach(function (t) { have[t.name] = true; });
-  (cfg.shiftDefs || []).forEach(function (d) { // 這個單位預設的班別還沒建立就自動補上
+  (parsed.shiftDefs || []).forEach(function (d) { // 這個單位班表上用到的班別(店 + 代號)還沒建立就自動補上
     if (have[d[0]]) return;
     var sts = sheet_(SHEETS.SHIFT_TYPE), r = sts.getLastRow() + 1;
     sts.getRange(r, 1, 1, 4).setNumberFormat('@').setValues([[d[0], d[1], d[2], unit]]);
@@ -1607,6 +1606,94 @@ function parseScheduleRows_(rows, tz, shiftOf) {
 
 /* ============ 報名寫回雲端硬碟班表 .xlsx ============ */
 
+/** 智崴科技班表(店 + 班別代號一列):列名 "店名 代號 上班-下班",下面有 "店名可出勤人數"、"店名預計支援人數"、"缺額:店名"。
+ *  班別名稱 = "智崴科技 店名 代號"。名額 = 該店當天缺額(負數取正),只給「該代號那格還是空白」的班;缺額 ≥ 0 就不開放。 */
+function parseStoreRows_(unit, rows) {
+  var dates = null, shifts = [], cand = [], gap = {}, defs = {}, defList = [];
+  function ds(v) {
+    if (typeof v === 'number' && v > 30000 && v < 80000) return Utilities.formatDate(new Date(Math.floor(v - 25569) * 86400000), 'UTC', 'yyyy-MM-dd');
+    var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[0] : '';
+  }
+  function hhmm(t) { var m = t.match(/^(\d{1,2}):(\d{2})$/); return ('0' + m[1]).slice(-2) + ':' + m[2]; }
+  rows.forEach(function (r) {
+    var label = String(r[0] == null ? '' : r[0]).trim();
+    if (!label) return;
+    if (label === '日期') { dates = r.slice(1).map(ds); return; }
+    if (!dates || label === '星期') return;
+    var gm = label.match(/^缺額[:：]\s*(.+)$/);
+    if (gm) {
+      for (var c = 1; c < r.length; c++) { var d = dates[c - 1]; if (d && typeof r[c] === 'number') gap[d + '|' + gm[1].trim()] = r[c]; }
+      return;
+    }
+    var m = label.match(/^(\S+)\s+(\S+)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+    if (!m) return;
+    var name = unit + ' ' + m[1] + ' ' + m[2];
+    if (!defs[name]) { defs[name] = true; defList.push([name, hhmm(m[3]), hhmm(m[4])]); }
+    for (var c2 = 1; c2 < r.length; c2++) {
+      var dd = dates[c2 - 1];
+      if (!dd) continue;
+      var cell = r[c2], txt = String(cell == null ? '' : cell).trim();
+      if (txt) {
+        var nm = txt.replace(/[\(（][^\)）]*[\)）]?$/, '').replace(/\d+$/, '').trim();
+        if (nm) shifts.push({ date: dd, name: nm, shift: name });
+      } else cand.push({ date: dd, store: m[1], shift: name });
+    }
+  });
+  var slots = [];
+  cand.forEach(function (x) {
+    var g = gap[x.date + '|' + x.store];
+    if (typeof g === 'number' && g < 0) slots.push({ date: x.date, kind: '', need: null, assigned: null, quota: Math.floor(-g), shift: x.shift });
+  });
+  return { shifts: shifts, slots: slots, shiftDefs: defList };
+}
+
+/** 智崴科技:員工報名後,同一店同一天的其他班別代號共用同一份缺額 → 同步扣掉/加回;選中的那個代號格子被占用 → 名額歸 0 */
+function storeOf_(unit, shift) { var m = String(shift).slice(unit.length).trim().match(/^(\S+)\s+\S+$/); return m ? m[1] : ''; }
+function slotAdjustAny_(date, unit, shift, delta) {
+  var cfg = SYNC_UNITS[unit];
+  if (!cfg || cfg.layout !== 'store' || !storeOf_(unit, shift)) return slotAdjust_(date, unit, shift, delta);
+  var store = storeOf_(unit, shift), sh = sheet_(SHEETS.SLOT), n = sh.getLastRow();
+  var vals = n > 1 ? sh.getRange(2, 1, n - 1, 4).getValues() : [], mine = -1, deficit = 0, sibs = [];
+  vals.forEach(function (r, i) {
+    if (dstr_(r[0]) !== date || r[1] !== unit || storeOf_(unit, r[2]) !== store) return;
+    if (r[2] === shift) mine = i; else { sibs.push(i); deficit = Math.max(deficit, Number(r[3]) || 0); }
+  });
+  if (delta < 0) { // 有人報名:本班格子被占 → 0;同店其他班別缺額 -1
+    if (mine >= 0) deficit = Math.max(deficit, Number(vals[mine][3]) || 0);
+    if (mine >= 0) sh.getRange(mine + 2, 4).setValue(0);
+    sibs.forEach(function (i) { sh.getRange(i + 2, 4).setValue(Math.max(0, (Number(vals[i][3]) || 0) - 1)); });
+  } else { // 取消:本班格子空出來 → 名額 = 同店缺額 + 1;同店其他班別 +1
+    var q = deficit + 1;
+    if (mine >= 0) sh.getRange(mine + 2, 4).setValue(q);
+    else { sh.appendRow([date, unit, shift, q]); sh.getRange(sh.getLastRow(), 1).setNumberFormat('@').setValue(date); }
+    sibs.forEach(function (i) { sh.getRange(i + 2, 4).setValue((Number(vals[i][3]) || 0) + 1); });
+  }
+}
+
+/** 智崴科技寫回班表:找「店名 代號」那一列、該日期那一欄的格子。新增 = 該格要是空白;取消 = 找到名字所在格(同店同代號優先,其次同日任一格) */
+function planStoreCell_(rows, merged, unit, date, shift, name, remove, isFree) {
+  var store = storeOf_(unit, shift), code = String(shift).trim().split(/\s+/).pop(), col = 0, target = null, any = null, dup = false;
+  function ds(v) {
+    if (typeof v === 'number' && v > 30000 && v < 80000) return new Date(Math.floor(v - 25569) * 86400000).toISOString().slice(0, 10);
+    var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[0] : '';
+  }
+  function isMerged(c, rn) { return merged.some(function (g) { return c >= g.c1 && c <= g.c2 && rn >= g.r1 && rn <= g.r2 && !(c === g.c1 && rn === g.r1); }); }
+  rows.forEach(function (r, i) {
+    var label = String(r[0] == null ? '' : r[0]).trim();
+    if (label === '日期') { var idx = r.slice(1).map(ds).indexOf(date); col = idx < 0 ? 0 : idx + 1; return; }
+    if (!col) return;
+    var m = label.match(/^(\S+)\s+(\S+)\s+\d{1,2}:\d{2}-\d{1,2}:\d{2}$/);
+    if (!m) return;
+    var txt = String(r[col] == null ? '' : r[col]).trim(), rn = i + 1, ref = xlsxColLetter_(col) + rn;
+    if (txt && txt.indexOf(name) === 0) { dup = true; if (m[1] === store && m[2] === code) target = ref; else if (!any) any = ref; }
+    if (!remove && m[1] === store && m[2] === code && !txt && !isMerged(col, rn) && (!isFree || isFree(ref))) target = target || ref;
+  });
+  if (remove) return (target || any) ? { ref: target || any } : null;
+  if (dup) throw new Error('班表上 ' + date + ' 已經有「' + name + '」,無法重複報名');
+  if (!target) throw new Error('班表 ' + date + ' 的「' + store + ' ' + code + '」那格不是空白,無法寫入(請聯絡人事確認班表)');
+  return { ref: target };
+}
+
 function xlsxColLetter_(c) { return String.fromCharCode(65 + c); } // c: 0=A … 25=Z(班表只用到 A–I)
 function xlsxColIndex_(letters) { var n = 0; for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64); return n - 1; }
 
@@ -1699,7 +1786,9 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   if (pi < 0) throw new Error('班表檔結構異常,找不到分頁檔');
   var xml = parts[pi].getDataAsString('UTF-8');
   var kind = /夜/.test(shift) ? '夜' : '早';
-  var plan = planScheduleCell_(sheet.rows, xlsxMergedRanges_(xml), date, kind, name, remove, function (ref) { return !/<f[\s>]/.test(xlsxGetCell_(xml, ref)); });
+  var freeFn = function (ref) { return !/<f[\s>]/.test(xlsxGetCell_(xml, ref)); };
+  var plan = cfg.layout === 'store' ? planStoreCell_(sheet.rows, xlsxMergedRanges_(xml), unit, date, shift, name, remove, freeFn)
+    : planScheduleCell_(sheet.rows, xlsxMergedRanges_(xml), date, kind, name, remove, freeFn);
   if (!plan) return; // 取消時班表上已找不到這個名字,不用處理
   var newXml = xlsxSetCell_(xml, plan.ref, remove ? '' : name);
   // 同步更新該區塊下方「可出勤人數」「缺額」兩列的快取值,讓班表和網頁的尚餘缺額維持一致
