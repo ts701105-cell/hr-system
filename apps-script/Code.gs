@@ -1044,6 +1044,9 @@ function findSlot_(date, unit, shift) {
   return null;
 }
 
+/** 寶雅特別週的報名天數上限:key = 該週星期一的日期。2026-11-23 那週是促銷檔期,可報 4 天 */
+var BAOYA_WEEK_LIMIT = { '2026-11-23': 4 };
+
 /** p = {date, unit, shift} */
 function signupApply_(u, p) {
   var date = String(p.date || ''), unit = String(p.unit || ''), shift = String(p.shift || '');
@@ -1059,7 +1062,8 @@ function signupApply_(u, p) {
   if (unit === '寶雅') { // 寶雅一週(週一到週日)最多報名 3 天
     var wk = weekKey_(date), mine = 0;
     rows.forEach(function (r) { if (String(r['員編']) === String(u['員編']) && r['單位'] === '寶雅' && weekKey_(String(r['日期'])) === wk) mine++; });
-    if (mine >= 3) throw new Error('寶雅一週最多只能報名 3 天(週一到週日),這週已報名 ' + mine + ' 天');
+    var lim = BAOYA_WEEK_LIMIT[wk] || 3; // 預設 3 天;促銷檔期等特別週在 BAOYA_WEEK_LIMIT 設定
+    if (mine >= lim) throw new Error('寶雅這週最多只能報名 ' + lim + ' 天(週一到週日),這週已報名 ' + mine + ' 天');
   }
   rows.forEach(function (r) {
     if (String(r['員編']) === String(u['員編']) && String(r['日期']) === date) throw new Error('這一天已經報名過了');
