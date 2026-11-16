@@ -1093,7 +1093,7 @@ function signupCancel_(u, p) {
   for (var i = 0; i < vals.length; i++) {
     var r = vals[i];
     if (dstr_(r[0]) === String(p.date) && String(r[1]) === String(u['員編']) && r[3] === p.unit && r[4] === p.shift) {
-      if (r[5] === '已錄取') return shiftsCancelOwn_(u, { date: String(p.date), reason: reason }, '排班報名'); // 上班前 30 分鐘前可取消
+      if (r[5] === '已錄取') return shiftsCancelOwn_(u, { date: String(p.date), reason: reason }, '排班報名'); // 上班日當天以前可取消
       try { writeBackSchedule_(p.unit, String(p.date), p.shift, u['姓名'], true); } catch (e) { Logger.log('取消報名:班表清除失敗 ' + e.message); }
       sh.deleteRow(i + 2);
       slotAdjust_(String(p.date), p.unit, p.shift, 1);
@@ -1104,7 +1104,7 @@ function signupCancel_(u, p) {
   throw new Error('找不到報名紀錄');
 }
 
-/** 員工取消自己的班,上班前 30 分鐘以前都可以(不論是網站報名的,還是本來就排在班表上的):
+/** 員工取消自己的班,上班日當天(含)以前都可以(不論是網站報名的,還是本來就排在班表上的):
  *  從雲端硬碟班表清掉名字(寫前備份)、刪除排班、移除對應報名紀錄、尚餘缺額加回 1。p = {date} */
 function shiftsCancelOwn_(u, p, src) {
   var date = String(p.date || ''), reason = String(p.reason || '').trim();
@@ -1118,13 +1118,9 @@ function shiftsCancelOwn_(u, p, src) {
   var shift = String(vals[hit][3]), unit = '';
   Object.keys(SYNC_UNITS).forEach(function (k) { if (shift.indexOf(k) === 0) unit = k; });
   if (!unit) throw new Error('這個班別不能自行取消,請聯絡主管');
-  // 上班前 30 分鐘(含)以前都能取消;上班時間取「班別」表,找不到就用排班列上的上班時間
-  var start = '';
-  shiftTypes_().forEach(function (t) { if (t.name === shift) start = String(t.start || ''); });
-  var sm = (start || String(vals[hit][4] || '')).match(/(\d{1,2}):(\d{2})/);
-  if (!sm) throw new Error('這個班沒有上班時間,無法自行取消,請聯絡主管');
-  var deadline = new Date(date + 'T' + ('0' + sm[1]).slice(-2) + ':' + sm[2] + ':00+08:00').getTime() - 30 * 60000;
-  if (Date.now() > deadline) throw new Error('已超過取消時限(上班前 30 分鐘),請聯絡主管');
+  // 上班日當天(含)以前都能取消:截止時間是該日 23:59:59(台北時間)
+  var deadline = new Date(date + 'T23:59:59+08:00').getTime();
+  if (Date.now() > deadline) throw new Error('這個班的日期已過,無法自行取消,請聯絡主管');
   writeBackSchedule_(unit, date, shift, u['姓名'], true); // 先清班表(失敗就整個中止,不會半套)
   sh.deleteRow(hit + 2);
   var ss = sheet_(SHEETS.SIGNUP), m = ss.getLastRow();
