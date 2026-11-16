@@ -1356,7 +1356,10 @@ var DRIVE_FOLDER_ID = '1UDKmu8_Ns_4PlZu6Q771iX55PMZP0HaR';
 
 var SYNC_UNITS = {
   '寶雅': { file: '寶雅班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '寶雅夜班' : '寶雅早班'; } },
-  '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function () { return '鷹世服早班'; } }
+  '鷹世服': { file: '鷹世服班表.xlsx', shiftOf: function () { return '鷹世服早班'; } },
+  // 智崴科技:班表格式與寶雅相同(早 8:00-17:00、夜 20:00-5:00);第一次同步時自動建立缺少的班別
+  '智崴科技': { file: '智崴科技班表.xlsx', shiftOf: function (label) { return /^夜/.test(label) ? '智崴科技夜班' : '智崴科技早班'; },
+    shiftDefs: [['智崴科技早班', '08:00', '17:00'], ['智崴科技夜班', '20:00', '05:00']] }
 };
 
 function syncDriveRoute_(u, p) {
@@ -1412,6 +1415,12 @@ function syncDriveUnit_(unit, month) {
   // 寫入前先確認用到的班別都已在「班別」工作表建立,避免寫到一半才報錯
   var have = {}, need = {};
   shiftTypes_().forEach(function (t) { have[t.name] = true; });
+  (cfg.shiftDefs || []).forEach(function (d) { // 這個單位預設的班別還沒建立就自動補上
+    if (have[d[0]]) return;
+    var sts = sheet_(SHEETS.SHIFT_TYPE), r = sts.getLastRow() + 1;
+    sts.getRange(r, 1, 1, 4).setNumberFormat('@').setValues([[d[0], d[1], d[2], unit]]);
+    have[d[0]] = true;
+  });
   parsed.shifts.concat(parsed.slots).forEach(function (x) { if (!have[x.shift]) need[x.shift] = true; });
   if (Object.keys(need).length) throw new Error('「班別」工作表缺少班別: ' + Object.keys(need).join('、') + '(請先貼入匯入檔的「班別」分頁)');
 

@@ -301,7 +301,7 @@
   }
 
   function renderRegister() {
-    var units = ['寶雅', '鷹世服'];
+    var units = ['寶雅', '鷹世服', '智崴科技'];
     app.innerHTML = '<div class="login card" style="max-width:520px"><h1>新人註冊</h1>' +
       '<p class="hint">送出後由人資審核,通過才會開通帳號。審核通過後帳號是您的<b>姓名</b>、初始密碼是<b>民國出生年月日 7 碼</b>。</p>' +
       '<form id="rf" class="form" style="grid-template-columns:1fr">' +
@@ -807,7 +807,7 @@
     var dirty = {};
 
     var syncBar = user.role === 'admin' ? '<div class="row" style="gap:8px;margin-bottom:8px"><button id="sync">從雲端硬碟同步 ' + esc(month) + ' 班表</button>' +
-      '<span class="hint">讀取寶雅、鷹世服班表,更新「名額」(這個按鈕只讀取班表,不會改動檔案)</span></div>' : '';
+      '<span class="hint">讀取寶雅、鷹世服、智崴科技班表,更新「名額」(這個按鈕只讀取班表,不會改動檔案)</span></div>' : '';
     var quotaCard = '<div class="card"><h3>名額設定</h3>' + syncBar + table(['日期', '班別', '單位', '已報名', '尚餘缺額'], qslots.map(function (s, i) {
       return '<tr><td>' + dlabel(s.date) + '</td><td>' + tlabel(s) + '</td><td>' + esc(s.unit) + '</td><td>' + s.count + '</td><td><input type="number" min="0" max="500" value="' + s.quota + '" data-q="' + i + '" style="width:80px"></td></tr>';
     }), '這個月還沒有設定名額') + '<div class="row" style="margin-top:8px"><div class="spacer"></div><button class="primary" id="qsv" disabled>儲存名額(填 0 = 移除)</button></div>' +
@@ -828,7 +828,7 @@
     if ($('#sync')) $('#sync').onclick = function () {
       guard(async function () {
         var lines = [], bad = false;
-        for (var unit of ['寶雅', '鷹世服']) {
+        for (var unit of ['寶雅', '鷹世服', '智崴科技']) {
           toast('正在同步 ' + unit + '…(約需十幾秒)');
           try {
             var r = await call('sync.drive', { month: month, unit: unit });
