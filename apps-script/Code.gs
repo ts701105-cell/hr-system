@@ -1975,6 +1975,30 @@ function installBlacklistTrigger() {
   return refreshBlacklist();
 }
 
+/** 每天下午 5 點(排程)寄一封彙整信給部署者:上次彙整之後「新增報班」的員工。沒有新增就不寄信。 */
+function signupDigest() {
+  var props = PropertiesService.getScriptProperties();
+  var last = props.getProperty('digest_last') || Utilities.formatDate(new Date(Date.now() - 24 * 3600000), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
+  var stamp = now_();
+  var rows = readObjs_(SHEETS.SIGNUP).filter(function (r) { return String(r['報名時間']) > last && String(r['報名時間']) <= stamp; });
+  props.setProperty('digest_last', stamp);
+  if (!rows.length) return 0;
+  rows.sort(function (a, b) { return String(a['單位'] + a['日期']) < String(b['單位'] + b['日期']) ? -1 : 1; });
+  var lines = rows.map(function (r) { return '・' + r['單位'] + ' ' + String(r['日期']) + ' ' + r['姓名'] + '(' + r['班別'] + ')報名於 ' + r['報名時間']; });
+  var to = Session.getEffectiveUser().getEmail();
+  if (!to) return rows.length;
+  MailApp.sendEmail(to, '【人事系統】今日新增報班 ' + rows.length + ' 人(' + last.slice(5, 16) + ' 起)',
+    '從 ' + last + ' 到 ' + stamp + ',新增報班的員工:\n\n' + lines.join('\n') + '\n\n(此信由系統每天 17:00 自動寄出)');
+  return rows.length;
+}
+
+/** 在編輯器執行一次:建立「每天下午 5 點(台北時間)」寄新增報班彙整信的排程。重複執行不會建立重複的排程 */
+function installSignupDigestTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'signupDigest') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('signupDigest').timeBased().everyDays(1).atHour(17).inTimezone('Asia/Taipei').create();
+  Logger.log('已設定每天 17:00 寄新增報班彙整信');
+}
+
 function isBlacklisted_(unit, name, email) {
   var set;
   try { set = blacklistSet_(unit); } catch (e) { Logger.log('黑名單讀取失敗:' + e.message); return false; }
