@@ -1371,9 +1371,9 @@ function syncDriveIfChanged() {
   var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
   var month = today_().slice(0, 7);
   Object.keys(SYNC_UNITS).forEach(function (unit) {
-    var it = folder.getFilesByName(SYNC_UNITS[unit].file);
-    if (!it.hasNext()) return;
-    var stamp = month + '|' + it.next().getLastUpdated().getTime(); // 跨月也會重新同步
+    var sf0 = schedFile_(SYNC_UNITS[unit]);
+    if (!sf0) return;
+    var stamp = month + '|' + sf0.file.getLastUpdated().getTime(); // 跨月也會重新同步
     var key = 'sync_' + unit;
     if (props.getProperty(key) === stamp) return; // 沒變動(含網站自己寫回班表造成的變動)就不同步
     // 每個單位各自取鎖,同步完一個就放掉,讓報名的人可以插隊,不會一次占住鎖好幾分鐘
@@ -1388,11 +1388,11 @@ function syncDriveIfChanged() {
 
 function syncDriveUnit_(unit, month) {
   var cfg = SYNC_UNITS[unit];
-  var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
-  if (!it.hasNext()) throw new Error('資料夾裡找不到「' + cfg.file + '」');
-  var src = it.next();
+  var sf = schedFile_(cfg);
+  if (!sf) throw new Error('資料夾裡找不到「' + cfg.file.replace(/\.xlsx$/, '') + '」(Google 試算表)或「' + cfg.file + '」');
   var want = month.replace('-', '');
-  var sheetRows = readXlsxSheet_(src.getBlob(), function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
+  var pickSheet = function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; };
+  var sheetRows = sf.native ? readNativeSheet_(sf.file, pickSheet, 9) : readXlsxSheet_(sf.file.getBlob(), pickSheet, 9);
   if (!sheetRows) return { unit: unit, month: month, sheet: '', shifts: 0, slots: 0, unmatched: [], note: '班表檔裡沒有 ' + month + ' 的分頁' };
   var parsed = cfg.layout === 'store' ? parseStoreRows_(unit, sheetRows.rows) : parseScheduleRows_(sheetRows.rows, 'Asia/Taipei', cfg.shiftOf);
   parsed.sheetName = sheetRows.name;
@@ -1590,6 +1590,62 @@ function parseScheduleRows_(rows, tz, shiftOf) {
   return { shifts: shifts, slots: slots };
 }
 
+/* ============ 班表檔來源:Google 試算表(優先)或 .xlsx(備用) ============ */
+var GSHEET_MIME = 'application/vnd.google-apps.spreadsheet';
+
+/** 找班表檔:優先找雲端硬碟資料夾裡「同名、不含 .xlsx」的 Google 試算表(例如「寶雅班表」);沒有才用 .xlsx。回傳 {file, native} 或 null。 */
+function schedFile_(cfg) {
+  var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID), base = cfg.file.replace(/\.xlsx$/, '');
+  var it = folder.getFilesByName(base);
+  while (it.hasNext()) { var f = it.next(); if (f.getMimeType() === GSHEET_MIME) return { file: f, native: true }; }
+  it = folder.getFilesByName(cfg.file);
+  return it.hasNext() ? { file: it.next(), native: false } : null;
+}
+
+/** 讀 Google 試算表的分頁,輸出格式和 readXlsxSheet_ 一樣(日期轉成 Excel 序號,錯誤值/布林轉空白),解析函式不用改 */
+function readNativeSheet_(file, pick, maxCols) {
+  var ss = SpreadsheetApp.openById(file.getId()), tz = ss.getSpreadsheetTimeZone(), found = null;
+  ss.getSheets().forEach(function (sh) { if (!found && pick(sh.getName())) found = sh; });
+  if (!found) return null;
+  var lr = found.getLastRow(), rows = [];
+  if (lr > 0) rows = found.getRange(1, 1, lr, maxCols).getValues().map(function (r) {
+    return r.map(function (v) {
+      if (v instanceof Date) {
+        if (v.getFullYear() < 1950) return ''; // 只有時間的儲存格
+        var d = Utilities.formatDate(v, tz, 'yyyy-MM-dd').split('-');
+        return Math.round(Date.UTC(Number(d[0]), Number(d[1]) - 1, Number(d[2])) / 86400000 + 25569);
+      }
+      if (typeof v === 'boolean') return '';
+      if (typeof v === 'string' && /^#(N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NUM!|NULL!)/.test(v)) return '';
+      return v;
+    });
+  });
+  return { name: found.getName(), rows: rows, sheet: found };
+}
+
+/** 在編輯器執行一次:把各單位的班表 .xlsx 轉成同名的 Google 試算表(原 .xlsx 保留不動)。已經是試算表的略過。
+ *  轉完之後,網站就改讀寫 Google 試算表;之後請只在 Google 試算表上編輯班表。 */
+function convertSchedulesToSheets() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(60000); // 轉換期間暫停網站寫入,避免轉到一半又有人報名
+  try {
+    var out = [];
+    Object.keys(SYNC_UNITS).forEach(function (unit) {
+      var cfg = SYNC_UNITS[unit], sf = schedFile_(cfg);
+      if (!sf) { out.push(unit + ': 找不到班表檔'); return; }
+      if (sf.native) { out.push(unit + ': 已經是 Google 試算表,略過'); return; }
+      var res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + sf.file.getId() + '/copy', {
+        method: 'post', contentType: 'application/json',
+        payload: JSON.stringify({ name: cfg.file.replace(/\.xlsx$/, ''), mimeType: GSHEET_MIME, parents: [DRIVE_FOLDER_ID] }),
+        headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+      });
+      out.push(unit + (res.getResponseCode() === 200 ? ': 已轉成 Google 試算表' : ': 轉換失敗(' + res.getResponseCode() + ') ' + res.getContentText().slice(0, 150)));
+    });
+    Logger.log(out.join('\n'));
+    return out;
+  } finally { try { lock.releaseLock(); } catch (x) { /* ignore */ } }
+}
+
 /* ============ 報名寫回雲端硬碟班表 .xlsx ============ */
 
 /** 智崴科技班表(店 + 班別代號一列):列名 "店名 代號 上班-下班",下面有 "店名可出勤人數"、"店名預計支援人數"、"缺額:店名"。
@@ -1753,6 +1809,34 @@ function planScheduleCell_(rows, merged, date, kind, name, remove, isFree) {
   return { ref: hit };
 }
 
+/** Google 試算表版寫回:直接改那一格(公式「可出勤人數」「缺額」會自己重算,不用像 xlsx 那樣手動更新快取值) */
+function writeBackNative_(unit, cfg, file, folder, date, shift, name, remove) {
+  var want = date.slice(0, 7).replace('-', '');
+  var sheet = readNativeSheet_(file, function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
+  if (!sheet) throw new Error('班表裡沒有 ' + date.slice(0, 7) + ' 的分頁,無法寫入');
+  var sh = sheet.sheet, merged = sh.getDataRange().getMergedRanges().map(function (r) {
+    return { c1: r.getColumn() - 1, r1: r.getRow(), c2: r.getLastColumn() - 1, r2: r.getLastRow() };
+  });
+  var kind = /夜/.test(shift) ? '夜' : '早';
+  var freeFn = function (ref) { return !sh.getRange(ref).getFormula(); };
+  var plan = cfg.layout === 'store' ? planStoreCell_(sheet.rows, merged, unit, date, shift, name, remove, freeFn)
+    : planScheduleCell_(sheet.rows, merged, date, kind, name, remove, freeFn);
+  if (!plan) return;
+  var props = PropertiesService.getScriptProperties(), bkKey = 'backup_' + unit;
+  if (Date.now() - Number(props.getProperty(bkKey) || 0) > 30 * 60000) { // 同單位 30 分鐘內只備份一次
+    var bf = folder.getFoldersByName('班表備份');
+    var bdir = bf.hasNext() ? bf.next() : folder.createFolder('班表備份');
+    file.makeCopy('班表備份_' + cfg.file.replace(/\.xlsx$/, '') + '_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss'), bdir);
+    props.setProperty(bkKey, String(Date.now()));
+  }
+  var syncKey = 'sync_' + unit, month0 = today_().slice(0, 7);
+  var wasSynced = props.getProperty(syncKey) === month0 + '|' + file.getLastUpdated().getTime();
+  sh.getRange(plan.ref).setValue(remove ? '' : name);
+  SpreadsheetApp.flush();
+  if (wasSynced) { try { props.setProperty(syncKey, month0 + '|' + DriveApp.getFileById(file.getId()).getLastUpdated().getTime()); } catch (e) { /* 失敗只是多同步一次 */ } }
+  return plan.ref;
+}
+
 /** 把報名者的名字寫進(或移出)雲端硬碟班表 .xlsx 該日期、該班別的第一個空白格。
  *  寫入前一定先備份原檔到「班表備份」資料夾;找不到空白格就丟錯,不會覆蓋任何人。
  *  呼叫端(doPost)已持有 Script Lock,所以與定時同步不會同時執行。 */
@@ -1760,9 +1844,10 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
   var cfg = SYNC_UNITS[unit];
   if (!cfg) return;
   var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
-  var it = folder.getFilesByName(cfg.file);
-  if (!it.hasNext()) throw new Error('雲端硬碟找不到「' + cfg.file + '」,無法寫入班表');
-  var file = it.next();
+  var sf = schedFile_(cfg);
+  if (!sf) throw new Error('雲端硬碟找不到「' + cfg.file.replace(/\.xlsx$/, '') + '」,無法寫入班表');
+  var file = sf.file;
+  if (sf.native) return writeBackNative_(unit, cfg, file, folder, date, shift, name, remove);
   var want = date.slice(0, 7).replace('-', '');
   var sheet = readXlsxSheet_(file.getBlob(), function (n) { return /^班表/.test(n) && n.replace(/\D/g, '') === want; }, 9);
   if (!sheet) throw new Error('班表檔裡沒有 ' + date.slice(0, 7) + ' 的分頁,無法寫入');
@@ -1909,9 +1994,10 @@ var BLACKLIST_SHEET = { '寶雅': ['黑名單-寶雅', '黑名單'], '鷹世服'
 function blacklistLive_(unit) {
   var cfg = SYNC_UNITS[unit], want = BLACKLIST_SHEET[unit];
   if (!cfg || !want) return {};
-  var it = DriveApp.getFolderById(DRIVE_FOLDER_ID).getFilesByName(cfg.file);
-  if (!it.hasNext()) return null;
-  var sh = readXlsxSheet_(it.next().getBlob(), function (n) { return want.indexOf(n.trim()) >= 0; }, 4);
+  var sf = schedFile_(cfg);
+  if (!sf) return null;
+  var pickBl = function (n) { return want.indexOf(n.trim()) >= 0; };
+  var sh = sf.native ? readNativeSheet_(sf.file, pickBl, 4) : readXlsxSheet_(sf.file.getBlob(), pickBl, 4);
   var set = {};
   if (sh) sh.rows.forEach(function (r, i) {
     if (i === 0) return; // 標題列
