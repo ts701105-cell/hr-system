@@ -1081,7 +1081,6 @@ function signupApply_(u, p) {
   shs.getRange(srow, 1, 1, 6).setNumberFormat('@').setValues([[date, u['員編'], u['姓名'], st.name, st.start, st.end]]);
   sheet_(SHEETS.SIGNUP).appendRow([date, u['員編'], u['姓名'], unit, shift, '已錄取', now_()]);
   slotAdjustAny_(date, unit, shift, -1); // 班表已多一人,尚餘缺額立刻減 1
-  notifyAdminShift_('報班', u['姓名'], unit, date, shift, '');
   return true;
 }
 
@@ -1205,18 +1204,6 @@ function recordCancel_(u, date, unit, shift, reason, source) {
   try {
     appendCancelXlsx_([source, t, u['姓名'], date, unit + ' ' + shift, reason, ip, ltime]);
   } catch (e) { Logger.log('取消排名.xlsx 寫入失敗:' + e.message); } // 失敗不影響取消本身,紀錄仍留在「取消紀錄」分頁
-  notifyAdminShift_('取消班別', u['姓名'], unit, date, shift, reason);
-}
-
-/** 有人報班或取消班別就寄信給部署者(自己);寄信失敗不影響報班/取消本身。信中不放身分證等個資 */
-function notifyAdminShift_(kind, name, unit, date, shift, reason) {
-  try {
-    var to = Session.getEffectiveUser().getEmail();
-    if (!to) return;
-    MailApp.sendEmail(to, '【人事系統】' + kind + ':' + name + '(' + unit + ' ' + date + ' ' + shift + ')',
-      '姓名:' + name + '\n動作:' + kind + '\n單位:' + unit + '\n日期:' + date + '\n班別:' + shift +
-      (reason ? '\n取消原因:' + reason : '') + '\n時間:' + now_() + '\n\n(此信由系統自動寄出)');
-  } catch (e) { Logger.log('報班/取消通知信寄送失敗:' + e.message); }
 }
 
 function xmlEsc_(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ''); }
@@ -1975,28 +1962,40 @@ function installBlacklistTrigger() {
   return refreshBlacklist();
 }
 
-/** 每天下午 5 點(排程)寄一封彙整信給部署者:上次彙整之後「新增報班」的員工。沒有新增就不寄信。 */
+/** 每天下午 5 點(排程)寄一封彙整信給部署者:上次彙整之後「新增報班」與「取消班別」兩張表。兩邊都沒有就不寄信。
+ *  報班/取消當下不再個別寄信(審核註冊申請的通知信 notifyAdminReg_ 不變)。 */
 function signupDigest() {
   var props = PropertiesService.getScriptProperties();
   var last = props.getProperty('digest_last') || Utilities.formatDate(new Date(Date.now() - 24 * 3600000), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
   var stamp = now_();
-  var rows = readObjs_(SHEETS.SIGNUP).filter(function (r) { return String(r['報名時間']) > last && String(r['報名時間']) <= stamp; });
+  var inRange = function (t) { t = String(t); return t > last && t <= stamp; };
+  var by = function (a, b) { return String(a['單位'] + a['日期']) < String(b['單位'] + b['日期']) ? -1 : 1; };
+  var adds = readObjs_(SHEETS.SIGNUP).filter(function (r) { return inRange(r['報名時間']); }).sort(by);
+  var cancels = readObjs_(SHEETS.CANCEL).filter(function (r) { return inRange(r['時間']); }).sort(by);
   props.setProperty('digest_last', stamp);
-  if (!rows.length) return 0;
-  rows.sort(function (a, b) { return String(a['單位'] + a['日期']) < String(b['單位'] + b['日期']) ? -1 : 1; });
-  var lines = rows.map(function (r) { return '・' + r['單位'] + ' ' + String(r['日期']) + ' ' + r['姓名'] + '(' + r['班別'] + ')報名於 ' + r['報名時間']; });
+  if (!adds.length && !cancels.length) return 0;
   var to = Session.getEffectiveUser().getEmail();
-  if (!to) return rows.length;
-  MailApp.sendEmail(to, '【人事系統】今日新增報班 ' + rows.length + ' 人(' + last.slice(5, 16) + ' 起)',
-    '從 ' + last + ' 到 ' + stamp + ',新增報班的員工:\n\n' + lines.join('\n') + '\n\n(此信由系統每天 17:00 自動寄出)');
-  return rows.length;
+  if (!to) return adds.length + cancels.length;
+  var esc = function (v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+  var table = function (title, heads, data) {
+    if (!data.length) return '<h3>' + title + '(0)</h3><p>無</p>';
+    var th = '<tr>' + heads.map(function (h) { return '<th style="border:1px solid #999;padding:4px 8px;background:#eee">' + h + '</th>'; }).join('') + '</tr>';
+    var tr = data.map(function (row) { return '<tr>' + row.map(function (c) { return '<td style="border:1px solid #999;padding:4px 8px">' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('');
+    return '<h3>' + title + '(' + data.length + ')</h3><table style="border-collapse:collapse;font-size:14px">' + th + tr + '</table>';
+  };
+  var html = '<p>統計區間:' + esc(last) + ' ~ ' + esc(stamp) + '</p>' +
+    table('新增報班', ['單位', '日期', '姓名', '班別', '報名時間'], adds.map(function (r) { return [r['單位'], String(r['日期']), r['姓名'], r['班別'], r['報名時間']]; })) +
+    table('取消班別', ['單位', '日期', '姓名', '班別', '取消原因', '取消時間'], cancels.map(function (r) { return [r['單位'], String(r['日期']), r['姓名'], r['班別'], r['原因'], r['時間']]; })) +
+    '<p style="color:#888">(此信由系統每天 17:00 自動寄出;沒有新增也沒有取消時不寄)</p>';
+  MailApp.sendEmail({ to: to, subject: '【人事系統】報班/取消彙整:新增 ' + adds.length + '、取消 ' + cancels.length, htmlBody: html });
+  return adds.length + cancels.length;
 }
 
-/** 在編輯器執行一次:建立「每天下午 5 點(台北時間)」寄新增報班彙整信的排程。重複執行不會建立重複的排程 */
+/** 在編輯器執行一次:建立「每天下午 5 點(台北時間)」寄報班/取消彙整信的排程。重複執行不會建立重複的排程 */
 function installSignupDigestTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'signupDigest') ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('signupDigest').timeBased().everyDays(1).atHour(17).inTimezone('Asia/Taipei').create();
-  Logger.log('已設定每天 17:00 寄新增報班彙整信');
+  Logger.log('已設定每天 17:00 寄報班/取消彙整信');
 }
 
 function isBlacklisted_(unit, name, email) {
