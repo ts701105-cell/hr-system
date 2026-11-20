@@ -114,7 +114,7 @@ function doPost(e) {
     var handler = ROUTES[action];
     if (!handler) return json_({ ok: false, error: '未知的操作: ' + action });
 
-    if (!READ_ONLY[action]) lock.waitLock(20000); // 只讀資料的動作不用排隊等鎖,多人同時開頁面才不會互相卡住
+    if (!READ_ONLY[action]) lock.waitLock(45000); // 只讀資料的動作不用排隊等鎖,多人同時開頁面才不會互相卡住
     var data = handler(user, p);
     return json_({ ok: true, data: data });
   } catch (err) {
@@ -1367,24 +1367,23 @@ function syncDriveDaily() {
 /** 給時間驅動觸發程序用(建議每 15 分鐘):只有班表 .xlsx 的「最後修改時間」變了才同步,沒變就直接結束。
  *  Apps Script 無法直接監聽雲端硬碟檔案變更,所以用定時檢查修改時間的方式達到「有變更就自動同步」。 */
 function syncDriveIfChanged() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) return; // 有人正在操作系統,下一輪再檢查
-  try {
-    var props = PropertiesService.getScriptProperties();
-    var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
-    var month = today_().slice(0, 7);
-    Object.keys(SYNC_UNITS).forEach(function (unit) {
-      var it = folder.getFilesByName(SYNC_UNITS[unit].file);
-      if (!it.hasNext()) return;
-      var stamp = month + '|' + it.next().getLastUpdated().getTime(); // 跨月也會重新同步
-      var key = 'sync_' + unit;
-      if (props.getProperty(key) === stamp) return;
-      try { Logger.log(JSON.stringify(syncDriveUnit_(unit, month))); props.setProperty(key, stamp); }
-      catch (e) { Logger.log(unit + ' 同步失敗: ' + e.message); }
-    });
-  } finally {
-    try { lock.releaseLock(); } catch (x) { /* 未持有鎖 */ }
-  }
+  var props = PropertiesService.getScriptProperties();
+  var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  var month = today_().slice(0, 7);
+  Object.keys(SYNC_UNITS).forEach(function (unit) {
+    var it = folder.getFilesByName(SYNC_UNITS[unit].file);
+    if (!it.hasNext()) return;
+    var stamp = month + '|' + it.next().getLastUpdated().getTime(); // 跨月也會重新同步
+    var key = 'sync_' + unit;
+    if (props.getProperty(key) === stamp) return; // 沒變動(含網站自己寫回班表造成的變動)就不同步
+    // 每個單位各自取鎖,同步完一個就放掉,讓報名的人可以插隊,不會一次占住鎖好幾分鐘
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(30000)) return; // 有人正在操作系統,下一輪再檢查
+    try {
+      Logger.log(JSON.stringify(syncDriveUnit_(unit, month))); props.setProperty(key, stamp);
+    } catch (e) { Logger.log(unit + ' 同步失敗: ' + e.message); }
+    finally { try { lock.releaseLock(); } catch (x) { /* 未持有鎖 */ } }
+  });
 }
 
 function syncDriveUnit_(unit, month) {
@@ -1788,10 +1787,17 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
     if (hasAvail && hasGap) break;
   }
 
-  // 備份原檔
-  var bf = folder.getFoldersByName('班表備份');
-  var bdir = bf.hasNext() ? bf.next() : folder.createFolder('班表備份');
-  file.makeCopy('班表備份_' + cfg.file.replace(/\.xlsx$/, '') + '_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.xlsx', bdir);
+  // 備份原檔(同一單位 30 分鐘內只備份一次,連續報名時不用每次都複製整個檔案,速度快很多)
+  var props = PropertiesService.getScriptProperties(), bkKey = 'backup_' + unit;
+  if (Date.now() - Number(props.getProperty(bkKey) || 0) > 30 * 60000) {
+    var bf = folder.getFoldersByName('班表備份');
+    var bdir = bf.hasNext() ? bf.next() : folder.createFolder('班表備份');
+    file.makeCopy('班表備份_' + cfg.file.replace(/\.xlsx$/, '') + '_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.xlsx', bdir);
+    props.setProperty(bkKey, String(Date.now()));
+  }
+  // 寫回前若班表本來就已經同步到最新,寫回後也把「已同步」記號更新,免得自己寫的變動又觸發一次整檔重新同步(那會長時間占住鎖)
+  var syncKey = 'sync_' + unit, month0 = today_().slice(0, 7);
+  var wasSynced = props.getProperty(syncKey) === month0 + '|' + file.getLastUpdated().getTime();
 
   parts[pi] = Utilities.newBlob(newXml, 'application/xml', sheet.path);
   var mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -1801,6 +1807,7 @@ function writeBackSchedule_(unit, date, shift, name, remove) {
     headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
   });
   if (res.getResponseCode() !== 200) throw new Error('寫入班表失敗(' + res.getResponseCode() + '):' + res.getContentText().slice(0, 200));
+  if (wasSynced) { try { props.setProperty(syncKey, month0 + '|' + DriveApp.getFileById(file.getId()).getLastUpdated().getTime()); } catch (e) { /* 失敗只是多同步一次 */ } }
   return plan.ref;
 }
 

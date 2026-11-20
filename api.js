@@ -7,7 +7,18 @@
   function getToken() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } }
   function setToken(t) { try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) { /* ignore */ } }
 
+  // 伺服器忙線(別人正在寫入,排隊逾時)時,這次請求還沒開始處理,可以安全地自動重試
+  function isBusy(msg) { return /鎖定逾時|Lock timeout|Could not obtain lock/i.test(String(msg || '')); }
   async function remote(action, params) {
+    for (var attempt = 0; ; attempt++) {
+      try { return await remoteOnce(action, params); }
+      catch (e) {
+        if (attempt >= 2 || !isBusy(e.message)) throw e;
+        await new Promise(function (r) { setTimeout(r, 2500 * (attempt + 1)); });
+      }
+    }
+  }
+  async function remoteOnce(action, params) {
     var res = await fetch(cfg.API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 避免 CORS 預檢
