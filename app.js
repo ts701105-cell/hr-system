@@ -366,7 +366,7 @@
       ['待審核', '已通過', '已退件', ''].map(function (x) { return '<option value="' + x + '"' + (x === st ? ' selected' : '') + '>' + (x || '全部') + '</option>'; }).join('') + '</select></div>' +
       '<p class="hint">新人在登入頁送出申請後會出現在這裡。請核對證件與填寫資料,可填入員編(不填會先給暫編),系統會自動建立帳號(帳號=姓名、密碼=民國生日 7 碼)。</p>' +
       '<div class="card">' + table(['申請時間', '姓名', '單位', '電話', '狀態', ''], list.map(function (r, i) {
-        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.phone) + '</td><td>' + badge(r.status) + '</td><td><button class="sm primary" data-v="' + i + '">檢視</button></td></tr>';
+        return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.name) + (r.blacklisted ? ' <span style="color:#fff;background:#d32f2f;border-radius:4px;padding:1px 6px;font-size:12px">⚠黑名單</span>' : '') + '</td><td>' + esc(r.unit) + '</td><td>' + esc(r.phone) + '</td><td>' + badge(r.status) + '</td><td><button class="sm primary" data-v="' + i + '">檢視</button></td></tr>';
       }), '沒有申請') + '</div>';
     $('#rst').onchange = function () { viewRegister.st = this.value; viewRegister(main).catch(function (e) { toast(e.message, true); }); };
     document.querySelectorAll('[data-v]').forEach(function (b) {
@@ -381,6 +381,7 @@
   function regDetail(r, done) {
     var pend = r.status === '待審核';
     openDialog('<h3>' + esc(r.name) + ' · ' + esc(r.unit) + ' ' + badge(r.status) + '</h3>' +
+      (r.blacklisted ? '<p style="background:#fdecea;color:#b71c1c;border:1px solid #d32f2f;border-radius:6px;padding:8px"><b>⚠ 注意:這位申請人在「' + esc(r.unit) + '」的黑名單上(姓名或 Email 符合)。</b>請確認後再決定是否通過。</p>' : '') +
       '<p class="muted">申請編號 ' + esc(r.appId) + '(' + esc(r.time) + ')<br>身分證字號:<b>' + esc(r.idNo) + '</b>　生日:' + esc(rocDate(r.birthday)) + '<br>電話:' + esc(r.phone) + '　Email:' + esc(r.email) +
       (r.reviewer ? '<br>審核:' + esc(r.reviewer) + '(' + esc(r.reviewTime) + ')' + (r.empId ? ',員編 ' + esc(r.empId) : '') + (r.note ? ',原因:' + esc(r.note) : '') : '') + '</p>' +
       (r.hasFiles ? '<div class="row"><button class="sm" data-k="front">身分證正面</button><button class="sm" data-k="back">身分證反面</button><button class="sm" data-k="bank">存摺封面</button></div><div id="rprev" style="margin:10px 0;text-align:center"></div>' : '<p class="hint">證件檔案已刪除。</p>') +
@@ -400,7 +401,8 @@
     if (pend) {
       $('#aok').onclick = function () {
         guard(async function () {
-          var x = await call('register.approve', { appId: r.appId, empId: val('aemp').trim() });
+          if (r.blacklisted && !confirm('⚠ ' + r.name + ' 在「' + r.unit + '」的黑名單上。\n確定仍要通過並建立帳號嗎?')) return;
+          var x = await call('register.approve', { appId: r.appId, empId: val('aemp').trim(), force: !!r.blacklisted });
           dlg.close();
           alert('已通過並建立帳號\n帳號:' + x.account + '(員編 ' + x.empId + ')\n初始密碼:' + x.password + '(民國生日)');
           done();

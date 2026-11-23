@@ -2111,7 +2111,7 @@ function registerSubmit_(p) {
   if (!/^09\d{8}$/.test(phone)) throw new Error('手機號碼請輸入 09 開頭共 10 碼');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Email 格式不正確');
   if (!SYNC_UNITS[unit]) throw new Error('請選擇申請單位');
-  if (isBlacklisted_(unit, name, email)) throw new Error('很抱歉,無法受理您的申請。如有疑問請洽人資。');
+  var onBlacklist = !!isBlacklisted_(unit, name, email); // 黑名單者不擋下,照常收件,但在審核時醒目標示並寄信通知管理員
 
   var sh = sheet_(SHEETS.REG), n = sh.getLastRow();
   var rows = n > 1 ? sh.getRange(2, 1, n - 1, 16).getValues() : [];
@@ -2143,7 +2143,7 @@ function registerSubmit_(p) {
   sh.appendRow([appId, name, idNo, birthday, phone, email, unit, saved.front, saved.back, saved.bank, '待審核', now_(), '', '', '', '']);
   sh.getRange(sh.getLastRow(), 4).setNumberFormat('@').setValue(birthday); // 生日存成文字,避免被轉成日期
   sh.getRange(sh.getLastRow(), 5).setNumberFormat('@').setValue(phone); // 電話存成文字,保留開頭的 0
-  notifyAdminReg_(name, unit, appId);
+  notifyAdminReg_(name, unit, appId, onBlacklist);
   return { appId: appId };
 }
 
@@ -2170,12 +2170,12 @@ function regFind_(appId) {
 
 /** 管理員:申請清單。p = {status}(空白 = 全部) */
 /** 有新申請就寄信給部署者(自己)。收件人取自執行身分,程式碼裡不放信箱;信中不放身分證等個資 */
-function notifyAdminReg_(name, unit, appId) {
+function notifyAdminReg_(name, unit, appId, onBlacklist) {
   try {
     var to = Session.getEffectiveUser().getEmail();
     if (!to) return;
-    MailApp.sendEmail(to, '【人事系統】新註冊申請待審核:' + name + '(' + unit + ')',
-      '有一筆新的註冊申請等您審核。\n\n姓名:' + name + '\n單位:' + unit + '\n申請編號:' + appId + '\n時間:' + now_() +
+    MailApp.sendEmail(to, '【人事系統】' + (onBlacklist ? '⚠黑名單人員申請帳號,請審核:' : '新註冊申請待審核:') + name + '(' + unit + ')',
+      (onBlacklist ? '⚠ 注意:這位申請人在「' + unit + '」的黑名單上(姓名或 Email 符合),請審核時特別留意。\n\n' : '') + '有一筆新的註冊申請等您審核。\n\n姓名:' + name + '\n單位:' + unit + '\n申請編號:' + appId + '\n時間:' + now_() +
       '\n\n請登入人事系統 → 註冊審核 處理。\n(此信由系統自動寄出)');
   } catch (e) { Logger.log('通知信寄送失敗:' + e.message); } // 寄信失敗不影響申請本身
 }
@@ -2189,7 +2189,8 @@ function registerList_(u, p) {
   try { regFixPhones_(); } catch (e) { Logger.log('電話修正失敗:' + e.message); }
   var st = String(p.status || '');
   return regRows_().rows.filter(function (r) { return !st || r[10] === st; }).map(function (r) {
-    return { appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: phoneFix_(r[4]), email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
+    var bl = r[10] === '待審核' && !!isBlacklisted_(r[6], r[1], r[5]); // 只對待審核的檢查黑名單
+    return { blacklisted: bl, appId: r[0], name: r[1], idNo: r[2], birthday: dstr_(r[3]), phone: phoneFix_(r[4]), email: r[5], unit: r[6], status: r[10], time: r[11], reviewer: r[12], reviewTime: r[13], note: r[14], empId: r[15],
       hasFiles: !!(r[7] || r[8] || r[9]) };
   }).reverse();
 }
@@ -2212,6 +2213,7 @@ function registerApprove_(u, p) {
   if (empId && !/^[A-Za-z0-9_-]{1,20}$/.test(empId)) throw new Error('員編只能是英數字、底線、連字號(最多 20 碼)');
   var rec = regFind_(String(p.appId)), r = rec.r;
   if (r[10] !== '待審核') throw new Error('這件申請已處理過');
+  if (!p.force && isBlacklisted_(r[6], r[1], r[5])) throw new Error('這位申請人在「' + r[6] + '」的黑名單上,請確認後再通過');
   if (!empId) { // 沒填員編:先給暫編 TMP001…,之後可在「員工資料」改成正式員編
     var used = {};
     readObjs_(SHEETS.EMP).forEach(function (e) { used[String(e['員編'])] = true; });
