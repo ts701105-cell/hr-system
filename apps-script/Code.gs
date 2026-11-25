@@ -618,38 +618,31 @@ function findIpLoc_(ip) {
   return found;
 }
 
-/** 打卡:QR → GPS 在範圍內 → IP 在公司網路,任一通過即可;都不通過才拒絕 */
+/** 打卡:QR、GPS、IP 三項都要通過,且都要對到同一個地點 */
 function punchDo_(u, p) {
   if (p.type !== '上班' && p.type !== '下班') throw new Error('打卡類型錯誤');
-  if (p.qr) return punchByQr_(u, p);
-  var ip = cleanIp_(p.ip), ipLoc = findIpLoc_(ip);
-  var lat = Number(p.lat), lng = Number(p.lng);
+  var ip = cleanIp_(p.ip), lat = Number(p.lat), lng = Number(p.lng);
   var hasPos = p.lat !== undefined && p.lat !== null && p.lat !== '' && isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
-  var best = null;
-  if (hasPos) readObjs_(SHEETS.LOC).forEach(function (l) {
-    if (l['啟用'] !== true && String(l['啟用']).toUpperCase() !== 'TRUE') return;
-    if (l['緯度'] === '' || l['經度'] === '') return;
-    var d = distance_(lat, lng, Number(l['緯度']), Number(l['經度']));
-    if (!best || d < best.d) best = { d: d, loc: l };
-  });
-  var gpsOk = best && best.d <= Number(best.loc['半徑(公尺)']), dist = best ? Math.round(best.d) : '';
-  if (gpsOk) {
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, best.loc['名稱'], '成功']);
-    return { time: now_(), place: best.loc['名稱'], distance: dist, method: 'GPS' };
+  function fail(place, result, msg) {
+    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, hasPos ? lat : '', hasPos ? lng : '', '', place, result]);
+    throw new Error(msg);
   }
-  if (ipLoc) {
-    var place = ipLoc['名稱'] + '(IP ' + ip + ')';
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, hasPos ? lat : '', hasPos ? lng : '', dist, place, '成功']);
-    return { time: now_(), place: place, distance: dist, method: 'IP' };
+  if (!p.qr || !p.qr.loc) throw new Error('請先掃描現場張貼的打卡 QR');
+  var loc = findActiveLoc_(p.qr.loc);
+  if (!loc) throw new Error('QR 對應的地點不存在或已停用');
+  if (!qrValid_(loc['地點ID'], p.qr.token)) fail(loc['名稱'], 'QR無效', 'QR 無效,請掃描現場張貼的正確 QR');
+  if (!hasPos) fail(loc['名稱'], '無定位', '取不到定位,請允許瀏覽器使用位置後再打卡');
+  var dist = Math.round(distance_(lat, lng, Number(loc['緯度']), Number(loc['經度'])));
+  if (dist > Number(loc['半徑(公尺)'])) {
+    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, loc['名稱'], '超出範圍']);
+    throw new Error('距離「' + loc['名稱'] + '」' + dist + ' 公尺,超出打卡範圍(' + loc['半徑(公尺)'] + ' 公尺)');
   }
-  if (!hasPos && !best) {
-    if (!readObjs_(SHEETS.LOC).length) throw new Error('尚未設定任何打卡地點,請聯絡管理員');
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, '', '', '', 'IP ' + ip, '無定位且IP不符']);
-    throw new Error('取不到定位,且目前網路(IP ' + ip + ')不是公司網路。請允許定位、連公司 Wi-Fi,或掃現場 QR 打卡');
-  }
-  if (!best) throw new Error('尚未設定任何打卡地點,請聯絡管理員');
-  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, best.loc['名稱'], '超出範圍']);
-  throw new Error('距離「' + best.loc['名稱'] + '」' + dist + ' 公尺,超出打卡範圍(' + best.loc['半徑(公尺)'] + ' 公尺);也可連公司 Wi-Fi 或掃現場 QR 打卡');
+  var ips = ipList_(loc['允許IP']);
+  if (!ips.length) fail(loc['名稱'], '未設定IP', '「' + loc['名稱'] + '」尚未設定允許 IP,請聯絡管理員');
+  if (ip === '未知' || !ips.some(function (x) { return ipMatch_(ip, x); }))
+    fail(loc['名稱'] + '(IP ' + ip + ')', 'IP不符', '目前網路(IP ' + ip + ')不是「' + loc['名稱'] + '」的公司網路,請連公司 Wi-Fi 後再打卡');
+  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, loc['名稱'] + '(QR+GPS+IP)', '成功']);
+  return { time: now_(), place: loc['名稱'], distance: dist, method: 'QR+GPS+IP' };
 }
 
 function punchRow_(r) {

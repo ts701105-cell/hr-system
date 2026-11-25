@@ -561,7 +561,7 @@
       '<div class="geo" id="ipst"></div>' +
       '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button><button id="scan">掃 QR 打卡</button></div>' +
       '<div class="punch-btns"><button class="primary" id="in" disabled>上班打卡</button><button class="ok" id="out" disabled>下班打卡</button></div>' +
-      '<p class="hint">三種方式任一通過即可打卡:① GPS 在打卡地點範圍內 ② 掃描現場張貼的 QR ③ 連公司網路(IP)。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
+      '<p class="hint">打卡要三項都通過:① 掃描現場張貼的 QR ② GPS 在打卡地點範圍內 ③ 連公司網路(Wi-Fi)。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
       '<div class="card"><h3>今日打卡紀錄</h3><div id="today"></div></div>';
 
     function tick() { $('#clk').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }); }
@@ -589,9 +589,9 @@
       } catch (e) { pos = null; g.textContent = e.message; }
       refreshBtns();
     }
-    var myIp = '', ipAvail = locs.some(function (l) { return l.ipOk; });
-    if (ipAvail) getIP().then(function (ip) { myIp = ip; var el = $('#ipst'); if (el) el.textContent = ip ? '目前網路 IP:' + ip + '(連公司 Wi-Fi 時可用 IP 打卡)' : '取不到 IP'; refreshBtns(); });
-    function refreshBtns() { $('#in').disabled = $('#out').disabled = !(pos || qr || (ipAvail && myIp)); }
+    var myIp = '', ipAvail = true;
+    getIP().then(function (ip) { myIp = ip; var el = $('#ipst'); if (el) el.textContent = ip ? '目前網路 IP:' + ip + '(需連公司 Wi-Fi)' : '取不到 IP,請確認網路連線'; refreshBtns(); });
+    function refreshBtns() { $('#in').disabled = $('#out').disabled = !(pos && qr && myIp); }
     function showQr() {
       var el = $('#qrst');
       if (!qr) { el.innerHTML = ''; return; }
@@ -608,23 +608,14 @@
     async function punch(type, btn) {
       await guard(async function () {
         var r;
-        if (qr) {
-          var used = qr; qr = null; showQr(); refreshBtns(); // QR 只用一次
-          var q = await Promise.race([getPosition().catch(function () { return null; }), new Promise(function (res) { setTimeout(function () { res(null); }, 4000); })]);
-          var args = { type: type, qr: used };
-          if (q) { args.lat = q.coords.latitude; args.lng = q.coords.longitude; }
-          r = await call('punch.do', args);
-        } else {
-          // 打卡當下重新定位(取不到定位時改用 IP,由後端判斷是否在公司網路)
-          var p = await Promise.race([getPosition().catch(function () { return null; }), new Promise(function (res) { setTimeout(function () { res(null); }, 12000); })]);
-          var ip = ipAvail ? await getIP() : '';
-          if (!p && !ip) throw new Error('取不到定位,請允許定位或改掃現場 QR');
-          var a = { type: type, ip: ip };
-          if (p) { a.lat = p.coords.latitude; a.lng = p.coords.longitude; }
-          r = await call('punch.do', a);
-        }
+        if (!qr) throw new Error('請先按「掃 QR 打卡」掃描現場張貼的 QR');
+        var used = qr; qr = null; showQr(); refreshBtns(); // QR 只用一次
+        var p = await getPosition(); // 打卡當下重新定位
+        var ip = await getIP();
+        if (!ip) throw new Error('取不到目前網路的 IP,請確認已連上公司 Wi-Fi');
+        r = await call('punch.do', { type: type, qr: used, lat: p.coords.latitude, lng: p.coords.longitude, ip: ip });
         records.unshift({ time: r.time, type: type, place: r.place, distance: r.distance, result: '成功' });
-        showToday(); toast(type + '打卡成功(' + r.place + (r.method === 'IP' ? ',IP 打卡' : '') + ')');
+        showToday(); toast(type + '打卡成功(' + r.place + ')');
       }, btn);
       // 失敗也會被記錄,重新抓取
       try { records = (await call('punch.my', { month: curMonth() })).filter(function (r) { return r.date === today; }); showToday(); } catch (e) { /* ignore */ }
