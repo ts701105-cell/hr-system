@@ -27,7 +27,7 @@ var HEADERS = {
   '假別': ['假別', '年度額度(天)'],
   '請假': ['單號', '員編', '姓名', '假別', '開始日期', '結束日期', '天數', '事由', '狀態', '簽核人', '簽核意見', '申請時間', '簽核時間'],
   '打卡': ['時間', '日期', '員編', '姓名', '類型', '緯度', '經度', '距離(公尺)', '地點', '結果'],
-  '地點': ['地點ID', '名稱', '緯度', '經度', '半徑(公尺)', '啟用', '允許IP'],
+  '地點': ['地點ID', '名稱', '緯度', '經度', '半徑(公尺)', '啟用'],
   '排班': ['日期', '員編', '姓名', '班別', '上班', '下班'],
   '班別': ['班別', '上班', '下班', '單位'],
   '登入紀錄': ['時間', '員編', '姓名', '結果', 'IP', '裝置'],
@@ -605,51 +605,23 @@ function punchByQr_(u, p) {
   return { time: now_(), place: place, distance: dist };
 }
 
-/* ---- IP 打卡:地點設定的「允許IP」(逗號分隔;結尾 * 代表整個網段,例如 61.220.10.*) ---- */
-function ipList_(v) { return String(v || '').split(/[,，\s]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x; }); }
-function ipMatch_(ip, pat) { return pat.slice(-1) === '*' ? ip.indexOf(pat.slice(0, -1)) === 0 : ip === pat; }
-function findIpLoc_(ip) {
-  if (!ip || ip === '未知') return null;
-  var found = null;
-  readObjs_(SHEETS.LOC).forEach(function (l) {
-    if (found || (l['啟用'] !== true && String(l['啟用']).toUpperCase() !== 'TRUE')) return;
-    if (ipList_(l['允許IP']).some(function (x) { return ipMatch_(ip, x); })) found = l;
-  });
-  return found;
-}
-
-/** 打卡:QR → GPS 在範圍內 → IP 在公司網路,任一通過即可;都不通過才拒絕 */
 function punchDo_(u, p) {
   if (p.type !== '上班' && p.type !== '下班') throw new Error('打卡類型錯誤');
   if (p.qr) return punchByQr_(u, p);
-  var ip = cleanIp_(p.ip), ipLoc = findIpLoc_(ip);
   var lat = Number(p.lat), lng = Number(p.lng);
-  var hasPos = p.lat !== undefined && p.lat !== null && p.lat !== '' && isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+  if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new Error('定位資料無效');
   var best = null;
-  if (hasPos) readObjs_(SHEETS.LOC).forEach(function (l) {
+  readObjs_(SHEETS.LOC).forEach(function (l) {
     if (l['啟用'] !== true && String(l['啟用']).toUpperCase() !== 'TRUE') return;
-    if (l['緯度'] === '' || l['經度'] === '') return;
     var d = distance_(lat, lng, Number(l['緯度']), Number(l['經度']));
     if (!best || d < best.d) best = { d: d, loc: l };
   });
-  var gpsOk = best && best.d <= Number(best.loc['半徑(公尺)']), dist = best ? Math.round(best.d) : '';
-  if (gpsOk) {
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, best.loc['名稱'], '成功']);
-    return { time: now_(), place: best.loc['名稱'], distance: dist, method: 'GPS' };
-  }
-  if (ipLoc) {
-    var place = ipLoc['名稱'] + '(IP ' + ip + ')';
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, hasPos ? lat : '', hasPos ? lng : '', dist, place, '成功']);
-    return { time: now_(), place: place, distance: dist, method: 'IP' };
-  }
-  if (!hasPos && !best) {
-    if (!readObjs_(SHEETS.LOC).length) throw new Error('尚未設定任何打卡地點,請聯絡管理員');
-    sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, '', '', '', 'IP ' + ip, '無定位且IP不符']);
-    throw new Error('取不到定位,且目前網路(IP ' + ip + ')不是公司網路。請允許定位、連公司 Wi-Fi,或掃現場 QR 打卡');
-  }
   if (!best) throw new Error('尚未設定任何打卡地點,請聯絡管理員');
-  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, best.loc['名稱'], '超出範圍']);
-  throw new Error('距離「' + best.loc['名稱'] + '」' + dist + ' 公尺,超出打卡範圍(' + best.loc['半徑(公尺)'] + ' 公尺);也可連公司 Wi-Fi 或掃現場 QR 打卡');
+  var ok = best.d <= Number(best['loc']['半徑(公尺)']);
+  var dist = Math.round(best.d);
+  sheet_(SHEETS.PUNCH).appendRow([now_(), today_(), u['員編'], u['姓名'], p.type, lat, lng, dist, best.loc['名稱'], ok ? '成功' : '超出範圍']);
+  if (!ok) throw new Error('距離「' + best.loc['名稱'] + '」' + dist + ' 公尺,超出打卡範圍(' + best.loc['半徑(公尺)'] + ' 公尺)');
+  return { time: now_(), place: best.loc['名稱'], distance: dist };
 }
 
 function punchRow_(r) {
@@ -683,11 +655,9 @@ function distance_(lat1, lon1, lat2, lon2) {
 
 function locationsList_(u) {
   var all = readObjs_(SHEETS.LOC).map(function (l) {
-    return { id: l['地點ID'], name: l['名稱'], lat: Number(l['緯度']), lng: Number(l['經度']), radius: Number(l['半徑(公尺)']), active: l['啟用'] === true || String(l['啟用']).toUpperCase() === 'TRUE',
-      ips: ipList_(l['允許IP']).join(', ') };
+    return { id: l['地點ID'], name: l['名稱'], lat: Number(l['緯度']), lng: Number(l['經度']), radius: Number(l['半徑(公尺)']), active: l['啟用'] === true || String(l['啟用']).toUpperCase() === 'TRUE' };
   });
-  if (isAdmin_(u)) return all;
-  return all.filter(function (l) { return l.active; }).map(function (l) { return { id: l.id, name: l.name, lat: l.lat, lng: l.lng, radius: l.radius, active: l.active, ipOk: !!l.ips }; });
+  return isAdmin_(u) ? all : all.filter(function (l) { return l.active; });
 }
 
 function locationsSave_(u, p) {
@@ -698,10 +668,7 @@ function locationsSave_(u, p) {
   if (!(radius >= 10 && radius <= 5000)) throw new Error('半徑需介於 10~5000 公尺');
   var sh = sheet_(SHEETS.LOC);
   var id = p.id || ('L' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyMMddHHmmss'));
-  var ips = ipList_(p.ips);
-  ips.forEach(function (x) { if (!/^[0-9a-fA-F:.]+\*?$/.test(x)) throw new Error('IP 格式不正確:' + x); });
-  var rec = [id, p.name, lat, lng, radius, p.active !== false, ips.join(', ')];
-  if (sh.getRange(1, 7).getValue() !== '允許IP') sh.getRange(1, 7).setValue('允許IP').setFontWeight('bold');
+  var rec = [id, p.name, lat, lng, radius, p.active !== false];
   var row = p.id ? findRow_(sh, 1, p.id) : 0;
   if (row) sh.getRange(row, 1, 1, rec.length).setValues([rec]); else sh.appendRow(rec);
   return id;

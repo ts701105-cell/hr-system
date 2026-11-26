@@ -558,10 +558,9 @@
       '<div class="muted">' + esc(today) + (myShift ? ' · 今日班別:' + esc(myShift.shift) + (myShift.start ? '(' + esc(myShift.start) + '–' + esc(myShift.end) + ')' : '') : ' · 今日未排班') + '</div>' +
       '<div class="geo" id="geo">尚未定位</div>' +
       '<div class="geo" id="qrst"></div>' +
-      '<div class="geo" id="ipst"></div>' +
       '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button><button id="scan">掃 QR 打卡</button></div>' +
       '<div class="punch-btns"><button class="primary" id="in" disabled>上班打卡</button><button class="ok" id="out" disabled>下班打卡</button></div>' +
-      '<p class="hint">三種方式任一通過即可打卡:① GPS 在打卡地點範圍內 ② 掃描現場張貼的 QR ③ 連公司網路(IP)。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
+      '<p class="hint">需在設定的打卡地點範圍內才能打卡;或掃描現場張貼的 QR。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
       '<div class="card"><h3>今日打卡紀錄</h3><div id="today"></div></div>';
 
     function tick() { $('#clk').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }); }
@@ -589,9 +588,7 @@
       } catch (e) { pos = null; g.textContent = e.message; }
       refreshBtns();
     }
-    var myIp = '', ipAvail = locs.some(function (l) { return l.ipOk; });
-    if (ipAvail) getIP().then(function (ip) { myIp = ip; var el = $('#ipst'); if (el) el.textContent = ip ? '目前網路 IP:' + ip + '(連公司 Wi-Fi 時可用 IP 打卡)' : '取不到 IP'; refreshBtns(); });
-    function refreshBtns() { $('#in').disabled = $('#out').disabled = !(pos || qr || (ipAvail && myIp)); }
+    function refreshBtns() { $('#in').disabled = $('#out').disabled = !(pos || qr); }
     function showQr() {
       var el = $('#qrst');
       if (!qr) { el.innerHTML = ''; return; }
@@ -615,16 +612,11 @@
           if (q) { args.lat = q.coords.latitude; args.lng = q.coords.longitude; }
           r = await call('punch.do', args);
         } else {
-          // 打卡當下重新定位(取不到定位時改用 IP,由後端判斷是否在公司網路)
-          var p = await Promise.race([getPosition().catch(function () { return null; }), new Promise(function (res) { setTimeout(function () { res(null); }, 12000); })]);
-          var ip = ipAvail ? await getIP() : '';
-          if (!p && !ip) throw new Error('取不到定位,請允許定位或改掃現場 QR');
-          var a = { type: type, ip: ip };
-          if (p) { a.lat = p.coords.latitude; a.lng = p.coords.longitude; }
-          r = await call('punch.do', a);
+          var p = await getPosition(); // 打卡當下重新定位
+          r = await call('punch.do', { type: type, lat: p.coords.latitude, lng: p.coords.longitude });
         }
         records.unshift({ time: r.time, type: type, place: r.place, distance: r.distance, result: '成功' });
-        showToday(); toast(type + '打卡成功(' + r.place + (r.method === 'IP' ? ',IP 打卡' : '') + ')');
+        showToday(); toast(type + '打卡成功(' + r.place + ')');
       }, btn);
       // 失敗也會被記錄,重新抓取
       try { records = (await call('punch.my', { month: curMonth() })).filter(function (r) { return r.date === today; }); showToday(); } catch (e) { /* ignore */ }
@@ -1010,8 +1002,8 @@
   async function viewLocations(main) {
     var list = await call('locations.list');
     main.innerHTML = '<div class="row"><h2 style="margin:0">打卡地點(GPS 定點)</h2><div class="spacer"></div><button id="ltpl">下載 Excel 範本</button><button id="limp">Excel 批次匯入</button><button class="primary" id="add">新增地點</button></div><input type="file" id="limpf" accept=".xlsx,.xls,.csv" class="hidden"><div class="card">' +
-      table(['名稱', '緯度', '經度', '半徑(公尺)', '允許 IP', '啟用', ''], list.map(function (l) {
-        return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td class="muted">' + (esc(l.ips) || '—') + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
+      table(['名稱', '緯度', '經度', '半徑(公尺)', '啟用', ''], list.map(function (l) {
+        return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
           '</td><td>' + (l.active ? '<button class="sm" data-qr="' + esc(l.id) + '">顯示 QR</button> ' : '') + '<button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
       }), '尚未設定地點') + '</div>' +
       '<p class="hint">提示:新增地點時輸入名稱或地址再按「搜尋座標」即可自動取得座標;也可在現場按「使用目前位置」。儲存前請用地圖連結確認位置正確。</p>';
@@ -1025,7 +1017,6 @@
         field('l_lat', '緯度', l.lat, 'number', 'step="any"') + field('l_lng', '經度', l.lng, 'number', 'step="any"') +
         '<div class="full muted" id="l_chk"></div>' +
         field('l_rad', '允許半徑(公尺)', l.radius, 'number', 'min="10" max="5000" required') +
-        '<div class="full"><label for="l_ips">允許 IP(選填:連這個網路就能打卡,多個用逗號分隔;結尾 * 代表整個網段,例如 61.220.10.*)</label><div class="row"><input id="l_ips" style="flex:1" value="' + esc(l.ips || '') + '" placeholder="例如:61.220.10.25"><button type="button" id="l_myip">加入目前 IP</button></div></div>' +
         '<div><label for="l_act">狀態</label><select id="l_act"><option value="1"' + (l.active ? ' selected' : '') + '>啟用</option><option value="0"' + (!l.active ? ' selected' : '') + '>停用</option></select></div>' +
         '<div class="full"><button type="button" id="l_here">使用目前位置</button></div>' +
         '<div class="full row"><button class="primary" type="submit">儲存</button><button type="button" data-close>取消</button></div></form>');
@@ -1059,14 +1050,6 @@
       showCoord();
       $('#l_lat', d).oninput = $('#l_lng', d).oninput = showCoord;
       $('#l_find', d).onclick = function () { guard(search, this); };
-      $('#l_myip', d).onclick = function () {
-        getIP().then(function (ip) {
-          if (!ip) return toast('取不到目前的 IP', true);
-          var el = document.getElementById('l_ips'), cur = el.value.split(/[,，\s]+/).filter(Boolean);
-          if (cur.indexOf(ip) < 0) cur.push(ip);
-          el.value = cur.join(', '); toast('已加入 ' + ip + '(請在公司網路上按這個鈕)');
-        });
-      };
       $('#l_here', d).onclick = function () {
         guard(async function () { var p = await getPosition(); pick({ lat: p.coords.latitude, lng: p.coords.longitude }); toast('已帶入目前位置(精準度約 ' + Math.round(p.coords.accuracy) + ' 公尺)'); }, this);
       };
@@ -1078,7 +1061,7 @@
             if (!ok) toast('請確認座標後再按儲存', true);
             return;
           }
-          await call('locations.save', { id: l.id, name: val('l_name').trim(), lat: Number(val('l_lat')), lng: Number(val('l_lng')), radius: Number(val('l_rad')), active: val('l_act') === '1', ips: val('l_ips') });
+          await call('locations.save', { id: l.id, name: val('l_name').trim(), lat: Number(val('l_lat')), lng: Number(val('l_lng')), radius: Number(val('l_rad')), active: val('l_act') === '1' });
           d.close(); toast('已儲存'); viewLocations(main);
         }, $('#lf button[type=submit]', d));
       };
