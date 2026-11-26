@@ -551,16 +551,16 @@
     var records = res[1].filter(function (r) { return r.date === today; });
     var myShift = res[2].filter(function (s) { return s.date === today && s.empId === user.id; })[0];
     var pos = null;
-    var qr = pendingQr; pendingQr = null; // 取用從連結帶進來的 QR
+    var qr = null; pendingQr = null; // QR 打卡已停用,只用 GPS
     function locName(id) { var l = locs.filter(function (x) { return x.id === id; })[0]; return l ? l.name : '未知地點'; }
 
     main.innerHTML = '<h2>打卡</h2><div class="card"><div class="clock" id="clk"></div>' +
       '<div class="muted">' + esc(today) + (myShift ? ' · 今日班別:' + esc(myShift.shift) + (myShift.start ? '(' + esc(myShift.start) + '–' + esc(myShift.end) + ')' : '') : ' · 今日未排班') + '</div>' +
       '<div class="geo" id="geo">尚未定位</div>' +
       '<div class="geo" id="qrst"></div>' +
-      '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button><button id="scan">掃 QR 打卡</button></div>' +
+      '<div class="row" style="margin-top:8px"><button id="loc">取得目前位置</button></div>' +
       '<div class="punch-btns"><button class="primary" id="in" disabled>上班打卡</button><button class="ok" id="out" disabled>下班打卡</button></div>' +
-      '<p class="hint">需在設定的打卡地點範圍內才能打卡;或掃描現場張貼的 QR。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
+      '<p class="hint">需在設定的打卡地點範圍內才能打卡。可打卡地點:' + (locs.length ? locs.map(function (l) { return esc(l.name) + '(' + l.radius + ' 公尺)'; }).join('、') : '尚未設定') + '</p></div>' +
       '<div class="card"><h3>今日打卡紀錄</h3><div id="today"></div></div>';
 
     function tick() { $('#clk').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }); }
@@ -596,7 +596,7 @@
       $('#qrx').onclick = function () { qr = null; showQr(); refreshBtns(); };
     }
     $('#loc').onclick = locate;
-    $('#scan').onclick = function () {
+    if ($('#scan')) $('#scan').onclick = function () {
       scanQr(function (q) { qr = q; showQr(); refreshBtns(); toast('已掃描「' + locName(q.loc) + '」,請按上班或下班打卡'); });
     };
     showQr(); refreshBtns();
@@ -1004,7 +1004,7 @@
     main.innerHTML = '<div class="row"><h2 style="margin:0">打卡地點(GPS 定點)</h2><div class="spacer"></div><button id="ltpl">下載 Excel 範本</button><button id="limp">Excel 批次匯入</button><button class="primary" id="add">新增地點</button></div><input type="file" id="limpf" accept=".xlsx,.xls,.csv" class="hidden"><div class="card">' +
       table(['名稱', '緯度', '經度', '半徑(公尺)', '啟用', ''], list.map(function (l) {
         return '<tr><td>' + esc(l.name) + '</td><td>' + esc(l.lat) + '</td><td>' + esc(l.lng) + '</td><td>' + esc(l.radius) + '</td><td>' + (l.active ? badge('成功').replace('成功', '啟用') : badge('撤回').replace('撤回', '停用')) +
-          '</td><td>' + (l.active ? '<button class="sm" data-qr="' + esc(l.id) + '">顯示 QR</button> ' : '') + '<button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
+          '</td><td>' + '<button class="sm" data-edit="' + esc(l.id) + '">編輯</button> <button class="sm danger" data-del="' + esc(l.id) + '">刪除</button></td></tr>';
       }), '尚未設定地點') + '</div>' +
       '<p class="hint">提示:新增地點時輸入名稱或地址再按「搜尋座標」即可自動取得座標;也可在現場按「使用目前位置」。儲存前請用地圖連結確認位置正確。</p>';
 

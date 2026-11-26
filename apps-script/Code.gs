@@ -607,7 +607,7 @@ function punchByQr_(u, p) {
 
 function punchDo_(u, p) {
   if (p.type !== '上班' && p.type !== '下班') throw new Error('打卡類型錯誤');
-  if (p.qr) return punchByQr_(u, p);
+  // 只用 GPS 打卡(QR 打卡已停用)
   var lat = Number(p.lat), lng = Number(p.lng);
   if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new Error('定位資料無效');
   var best = null;
